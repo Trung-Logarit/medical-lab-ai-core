@@ -1,0 +1,10 @@
+{
+  "liver_enzyme_elevation": {
+    "panel": "BIOCHEM",
+    "tests": ["ALT", "AST"],
+    "conditions": ["liver_injury"],
+    "description": "Anonymous synthetic pattern for elevated aminotransferases.",
+    "source": "synthetic_sample"
+  }
+}
+

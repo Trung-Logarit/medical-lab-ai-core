@@ -1,0 +1,23 @@
+[
+  {
+    "case_id": "demo_cbc_001",
+    "panel": "CBC",
+    "patient": "anonymous",
+    "results": [
+      {"test": "WBC", "value": 12.4, "unit": "10^9/L", "status": "high"},
+      {"test": "HGB", "value": 10.8, "unit": "g/dL", "status": "low"},
+      {"test": "PLT", "value": 260, "unit": "10^9/L", "status": "normal"}
+    ]
+  },
+  {
+    "case_id": "demo_biochem_001",
+    "panel": "BIOCHEM",
+    "patient": "anonymous",
+    "results": [
+      {"test": "ALT", "value": 78, "unit": "U/L", "status": "high"},
+      {"test": "AST", "value": 65, "unit": "U/L", "status": "high"},
+      {"test": "CREATININE", "value": 0.9, "unit": "mg/dL", "status": "normal"}
+    ]
+  }
+]
+

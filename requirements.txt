@@ -1,0 +1,15 @@
+numpy==1.26.4
+opencv-python>=4.9.0
+Pillow
+paddlepaddle>=3.0.0
+paddleocr>=3.0.0
+PyMuPDF
+python-dotenv
+requests
+typing_extensions
+sentence-transformers
+qdrant-client
+neo4j
+langgraph
+langfuse
+google-genai
