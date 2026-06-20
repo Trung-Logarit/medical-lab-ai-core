@@ -71,8 +71,6 @@ medical-lab-ai-core/
 ├── .env.example                     # Safe placeholder configuration
 ├── .gitignore
 ├── requirements.txt
-├── REFACTOR_PLAN.md
-└── REFACTOR_REPORT.md
 ```
 
 Generated outputs, raw source documents, database snapshots, checkpoints, local environments, and secret files are intentionally excluded.
