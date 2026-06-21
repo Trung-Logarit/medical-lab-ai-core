@@ -15,6 +15,11 @@ PACK_PATHS = (
     PACK_DIR / "biochem_50_book_evidence_pack_v1.json",
 )
 
+SOURCE_LABELS = {
+    "clinical_hematology.pdf": "The Bethesda Handbook of Clinical Hematology, 3rd ed.",
+    "henry.pdf": "Henry's Clinical Diagnosis and Management by Laboratory Methods, 21st ed.",
+}
+
 
 def _normalize(text: Any) -> str:
     value = unicodedata.normalize("NFD", str(text or "").lower())
@@ -85,7 +90,10 @@ def retrieve_for_report_context(ctx: dict[str, Any], max_items: int = 6) -> list
                 "evidence_id": evidence_id,
                 "id": evidence_id,
                 "panel": evidence.get("panel") or case.get("panel"),
-                "source": evidence.get("source", "Unknown source"),
+                "source": SOURCE_LABELS.get(
+                    str(evidence.get("source") or "").lower(),
+                    evidence.get("source", "Unknown source"),
+                ),
                 "page": evidence.get("page"),
                 "text": evidence.get("text") or evidence.get("quote") or "",
                 "tests": evidence.get("tests") or case.get("tests") or [],

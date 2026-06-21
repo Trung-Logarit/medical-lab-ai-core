@@ -323,7 +323,11 @@ def format_ui_data_to_case(user_indicators: list, session_id: str) -> dict:
 
 
 @observe(name="GraphRAG Report Analysis")
-def analyze_indicators_with_llm(user_indicators: list, session_id: str = None) -> str:
+def analyze_indicators_with_llm(
+    user_indicators: list,
+    session_id: str = None,
+    demo_case_id: str = None,
+) -> str:
     if session_id:
         langfuse_context.update_current_trace(session_id=session_id, tags=["graphrag_analysis"])
         
@@ -337,48 +341,115 @@ def analyze_indicators_with_llm(user_indicators: list, session_id: str = None) -
     biochem_patt = lab_core.load_json(config.BIOCHEM_PATTERN_PATH) if config.BIOCHEM_PATTERN_PATH.exists() else {}
     ctx = lab_core.augment_reasoning_context_with_static_patterns(ctx, cbc_demo, biochem_patt)
 
+    demo_context = None
+    if demo_case_id:
+        try:
+            from medical_lab_ai_core.knowledge_base.clinical_demo_context import get_runtime_context
+
+            demo_context = get_runtime_context(demo_case_id)
+            if demo_context:
+                ctx["case_id"] = demo_case_id
+                ctx["detected_patterns"] = demo_context["patterns"]
+                ctx["conditions"] = demo_context["conditions"]
+                ctx["curated_answer_outline"] = demo_context["answer_outline"]
+                logger.info(
+                    "Using verified clinical graph context %s for demo case %s.",
+                    demo_context["schema_version"], demo_case_id,
+                )
+        except Exception as exc:
+            logger.warning("Clinical demo context loading failed: %s", exc)
+
     abnormal_tests = ctx.get("abnormal_tests", [])
     conditions = ctx.get("conditions", [])
 
     if not ctx.get("abnormal_items"):
         return "Ket qua xet nghiem cua ban nam trong gioi han tham chieu. Khong phat hien chi so bat thuong nao."
 
-    # 2. Truy xuat Kien thuc: Ket hop Graph (Neo4j) + Vector (Qdrant)
-    logger.info("Querying Neo4j for conditions: %s", conditions)
-    graph_evidence = fetch_evidence_from_neo4j(abnormal_tests, conditions)
-
-    # Path D: INDICATES chain
-    try:
-        from medical_lab_ai_core.retrieval.neo4j_retriever import retrieve_by_indicates
-        abnormal_items = [
-            {"test": item.get("test_name", ""), "status": item.get("status", "")}
-            for item in user_indicators
-            if (item.get("status") or "").lower() in ("high", "low")
-        ]
-        indicates_evidence = retrieve_by_indicates(abnormal_items, limit_per_test=3)
-        graph_evidence = graph_evidence + indicates_evidence
-        logger.info("INDICATES chain returned %s evidence items.", len(indicates_evidence))
-    except Exception as e:
-        logger.warning("INDICATES chain retrieval skipped: %s", e)
-
-    logger.info("Querying Qdrant vector evidence.")
-    vector_evidence = lab_core.retrieve_evidence(ctx)
-
-    try:
+    # 2. Truy xuất kiến thức. Demo V3 ưu tiên evidence exact-match PDF,
+    # sau đó bổ sung evidence từ gói sách QA100 nếu liên quan trực tiếp.
+    if demo_context:
         from medical_lab_ai_core.knowledge_base.curated_evidence import retrieve_for_report_context
 
-        curated_evidence = retrieve_for_report_context(ctx, max_items=config.MAX_FINAL_EVIDENCE)
-        logger.info("Curated QA100 packs returned %s evidence items.", len(curated_evidence))
-    except Exception as exc:
-        logger.warning("Curated QA100 evidence retrieval skipped: %s", exc)
-        curated_evidence = []
+        supplemental_evidence = retrieve_for_report_context(
+            ctx,
+            max_items=config.MAX_FINAL_EVIDENCE,
+        )
+        # Không áp dụng kết luận dành riêng cho trẻ em khi phiếu
+        # không có tuổi. Các đoạn khác trên cùng trang vẫn có thể dùng.
+        supplemental_evidence = [
+            item for item in supplemental_evidence
+            if "in children" not in str(item.get("text") or "").lower()
+        ]
+        combined_evidence = lab_core.dedup_evidence(
+            supplemental_evidence + demo_context["evidence"]
+        )
+        final_evidence = lab_core.rerank_evidence(
+            combined_evidence,
+            ctx,
+        )[:config.MAX_FINAL_EVIDENCE]
+        evidence_blob = " ".join(
+            str(item.get("text") or "").lower() for item in final_evidence
+        )
+        etiology_terms = [
+            term for term in ("infection", "inflammation", "stress", "drug", "medication")
+            if term in evidence_blob
+        ]
+        runtime_guardrails = (
+            ctx.get("curated_answer_outline", {})
+            .setdefault("runtime_guardrails", {})
+        )
+        runtime_guardrails["etiology_supported_by_current_evidence"] = bool(etiology_terms)
+        runtime_guardrails["etiology_terms_found_in_evidence"] = etiology_terms
+        runtime_guardrails["etiology_support_scope"] = "evaluation_context_only"
+        runtime_guardrails["etiology_scope_instruction"] = (
+            "Evidence bổ sung chỉ hỗ trợ các bối cảnh cần đánh giá; "
+            "không xác nhận nguyên nhân hoặc chẩn đoán cho ca hiện tại."
+        )
+        logger.info(
+            "Demo V3 returned %s case evidence items plus %s curated book items.",
+            len(demo_context["evidence"]),
+            len(supplemental_evidence),
+        )
+    else:
+        logger.info("Querying Neo4j for conditions: %s", conditions)
+        graph_evidence = fetch_evidence_from_neo4j(abnormal_tests, conditions)
 
-    combined_evidence = lab_core.dedup_evidence(
-        curated_evidence + graph_evidence + vector_evidence
+        # Path D: INDICATES chain
+        try:
+            from medical_lab_ai_core.retrieval.neo4j_retriever import retrieve_by_indicates
+            abnormal_items = [
+                {"test": item.get("test_name", ""), "status": item.get("status", "")}
+                for item in user_indicators
+                if (item.get("status") or "").lower() in ("high", "low")
+            ]
+            indicates_evidence = retrieve_by_indicates(abnormal_items, limit_per_test=3)
+            graph_evidence = graph_evidence + indicates_evidence
+            logger.info("INDICATES chain returned %s evidence items.", len(indicates_evidence))
+        except Exception as e:
+            logger.warning("INDICATES chain retrieval skipped: %s", e)
+
+        logger.info("Querying Qdrant vector evidence.")
+        vector_evidence = lab_core.retrieve_evidence(ctx)
+
+        try:
+            from medical_lab_ai_core.knowledge_base.curated_evidence import retrieve_for_report_context
+
+            curated_evidence = retrieve_for_report_context(ctx, max_items=config.MAX_FINAL_EVIDENCE)
+            logger.info("Curated QA100 packs returned %s evidence items.", len(curated_evidence))
+        except Exception as exc:
+            logger.warning("Curated QA100 evidence retrieval skipped: %s", exc)
+            curated_evidence = []
+
+        combined_evidence = lab_core.dedup_evidence(
+            curated_evidence + graph_evidence + vector_evidence
+        )
+        final_evidence = lab_core.rerank_evidence(combined_evidence, ctx)[:config.MAX_FINAL_EVIDENCE]
+
+    graph_reasoning_paths = (
+        demo_context["reasoning_paths"]
+        if demo_context
+        else lab_core.enrich_reasoning_paths(ctx, final_evidence)
     )
-    final_evidence = lab_core.rerank_evidence(combined_evidence, ctx)[:config.MAX_FINAL_EVIDENCE]
-
-    graph_reasoning_paths = lab_core.enrich_reasoning_paths(ctx, final_evidence)
 
     prompt = lab_core.build_final_prompt(
         reasoning_context=ctx,

@@ -1,3 +1,0 @@
-{"pattern_id":"cbc_demo_anemia","panel":"CBC","pattern_name":"Low hemoglobin pattern","conditions":["anemia"],"tests":["HGB"],"description":"Anonymous demo pattern for low hemoglobin interpretation.","source":"synthetic_sample"}
-{"pattern_id":"cbc_demo_inflammation","panel":"CBC","pattern_name":"High WBC pattern","conditions":["infection_or_inflammation"],"tests":["WBC"],"description":"Anonymous demo pattern for leukocytosis context.","source":"synthetic_sample"}
-

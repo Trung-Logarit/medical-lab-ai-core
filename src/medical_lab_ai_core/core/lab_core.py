@@ -1818,17 +1818,27 @@ def clean_reference_quote(text: str, max_len: int = 360) -> str:
     return cleaned[:max_len].rstrip() + " […]" if len(cleaned) > max_len else cleaned
 
 
-def build_references_block(evidence: list[dict]) -> str:
+def build_references_block(
+    evidence: list[dict],
+    citation_numbers: set[int] | None = None,
+) -> str:
     if not evidence:
         return "📚 Tài liệu tham khảo:\n- Không có bằng chứng sách phù hợp để trích dẫn."
 
     lines = ["📚 Tài liệu tham khảo:"]
     for index, item in enumerate(evidence[:MAX_FINAL_EVIDENCE], start=1):
+        if citation_numbers and index not in citation_numbers:
+            continue
         source = item.get("source", "Unknown source")
         page = item.get("page")
         location = f", trang {page}" if page not in (None, "") else ""
+        # Luôn hiển thị nguyên văn bằng chứng để người dùng có thể
+        # đối chiếu với tên tài liệu và số trang. Bản dịch (nếu có)
+        # phải được hiển thị riêng, không thay thế nguyên văn này.
         quote = clean_reference_quote(item.get("text", ""))
         lines.append(f"[{index}] {source}{location}. “{quote}”")
+    if len(lines) == 1:
+        lines.append("- Câu trả lời không sử dụng citation trực tiếp.")
     return "\n".join(lines)
 
 
@@ -1837,29 +1847,29 @@ def describe_knowledge_source(source: str) -> str:
     normalized = source_name.lower().replace("_", " ")
     if "harrison" in normalized:
         return (
-            f"- {source_name}: giáo trình nội khoa quốc tế, trình bày nền tảng bệnh học "
-            "và cách tiếp cận lâm sàng đa chuyên khoa."
+            f"- {source_name}: giáo trình nội khoa tham khảo quốc tế, cung cấp nền tảng "
+            "bệnh học và cách tiếp cận lâm sàng đa chuyên khoa."
         )
     if "clinical hematology" in normalized or "clinical hematology" in normalized.replace(".pdf", ""):
         return (
-            f"- {source_name}: tài liệu huyết học lâm sàng chuyên sâu, tập trung vào "
-            "công thức máu và các rối loạn tế bào máu."
+            f"- {source_name}: chuyên khảo huyết học lâm sàng, được sử dụng để đối chiếu "
+            "công thức máu, hình thái tế bào và các rối loạn huyết học."
         )
     if "henry" in normalized:
         return (
-            f"- {source_name}: tài liệu quốc tế chuyên về chẩn đoán và quản lý bệnh "
-            "dựa trên xét nghiệm y khoa."
+            f"- {source_name}: giáo trình chuyên ngành y học xét nghiệm, trình bày nguyên lý "
+            "phân tích, diễn giải kết quả và ứng dụng xét nghiệm trong thực hành lâm sàng."
         )
     if "tietz" in normalized:
         return (
-            f"- {source_name}: tài liệu nền tảng quốc tế về hóa sinh lâm sàng và "
-            "các dấu ấn xét nghiệm."
+            f"- {source_name}: giáo trình hóa sinh lâm sàng, cung cấp cơ sở khoa học cho "
+            "diễn giải các chất phân tích và dấu ấn xét nghiệm."
         )
     return f"- {source_name}: tài liệu chuyên môn được hệ thống truy xuất cho nội dung trên."
 
 
 def build_source_intro(evidence: list[dict]) -> str:
-    lines = ["📚 Nguồn kiến thức:"]
+    lines = ["📚 Nguồn học thuật được sử dụng:"]
     seen_sources: set[str] = set()
     for item in evidence:
         source = str(item.get("source") or "Unknown source").strip()
@@ -1888,7 +1898,12 @@ def build_user_visible_answer(answer: str, ctx: dict, evidence: list[dict]) -> s
         cited_evidence = evidence[:3]
 
     cleaned_answer = mechanical_cleanup_answer(answer)
-    references = build_references_block(cited_evidence)
+    # Preserve the original evidence order so [n] in the answer always maps
+    # to the same [n] in the reference block.
+    references = build_references_block(
+        evidence,
+        cited_numbers if cited_numbers else set(range(1, min(len(evidence), 3) + 1)),
+    )
     source_intro = build_source_intro(cited_evidence)
     return f"{cleaned_answer}\n\n{references}\n\n{source_intro}".strip()
 
@@ -2112,14 +2127,19 @@ def format_abnormal_findings(reasoning_context: dict) -> str:
         if value is None:
             value = item.get("raw_value", "")
 
+        status_vi = {"high": "cao", "low": "thấp", "normal": "bình thường"}.get(
+            str(item.get("status") or "").lower(), item.get("status")
+        )
+        panel_vi = {"CBC": "Công thức máu", "BIOCHEM": "Hóa sinh"}.get(
+            str(item.get("panel") or "").upper(), item.get("panel")
+        )
         line = (
-            f"- {item.get('panel')} | {item.get('test')} "
-            f"({item.get('test_label')}): {value} {item.get('unit', '')}, "
-            f"status = {item.get('status')}"
+            f"- {panel_vi} | {item.get('test')}: {value} {item.get('unit', '')}, "
+            f"trạng thái = {status_vi}"
         )
 
         if item.get("reference_range"):
-            line += f", reference = {item.get('reference_range')}"
+            line += f", khoảng tham chiếu = {item.get('reference_range')}"
 
         lines.append(line)
 
@@ -2130,18 +2150,12 @@ def format_patterns(reasoning_context: dict) -> str:
     patterns = reasoning_context.get("detected_patterns", [])
 
     if not patterns:
-        return "- Không phát hiện pattern phối hợp rõ ràng."
+        return "- Không phát hiện mẫu hình phối hợp rõ ràng."
 
     lines = []
 
     for pattern in patterns[:6]:
-        line = (
-            f"- {pattern.get('pattern_name')} ({pattern.get('panel')}), "
-            f"confidence={pattern.get('confidence')}: {pattern.get('description')}"
-        )
-
-        if pattern.get("conditions"):
-            line += f" Conditions: {', '.join(pattern.get('conditions'))}"
+        line = f"- {pattern.get('description')}"
 
         lines.append(line)
 
@@ -2180,34 +2194,86 @@ def build_final_prompt(
     pattern_text = format_patterns(reasoning_context)
     evidence_text = format_evidence(evidence)
     graph_text = format_reasoning_paths_for_prompt(reasoning_paths or [])
+    normal_companions = [
+        {
+            "test": item.get("test"),
+            "value": item.get("value"),
+            "unit": item.get("unit", ""),
+            "status": item.get("status"),
+        }
+        for item in reasoning_context.get("items", [])
+        if normalize_status(item.get("status")) == "normal"
+    ]
+    companion_text = json.dumps(normal_companions, ensure_ascii=False, indent=2)
+    curated_outline = reasoning_context.get("curated_answer_outline") or {}
+    curated_text = json.dumps(curated_outline, ensure_ascii=False, indent=2)
 
     return f"""
 Bạn là chuyên gia diễn giải xét nghiệm cận lâm sàng.
 
 Nhiệm vụ:
 - Diễn giải các bất thường xét nghiệm CBC và/hoặc sinh hóa cho người dùng cuối bằng tiếng Việt.
+- Toàn bộ phần trả lời phải dùng tiếng Việt tự nhiên. Chỉ giữ nguyên mã xét nghiệm
+  (ví dụ WBC, NEUT#, MCHC), đơn vị và tên sách/tài liệu tiếng Anh.
+- Không hiển thị tên mẫu hình, nhãn lâm sàng hay trạng thái bằng tiếng Anh;
+  phải chuyển chúng sang tiếng Việt.
 - Dùng ABNORMAL FINDINGS để biết chính xác xét nghiệm nào bất thường.
 - Dùng DETECTED PATTERNS và GRAPH REASONING PATHS như context hỗ trợ suy luận.
 - Chỉ dùng EVIDENCE từ sách PDF để đặt citation [1], [2], [3].
 - Không dùng static pattern/rule làm citation nếu static pattern/rule không nằm trong EVIDENCE.
 - Không bịa xét nghiệm không có trong ABNORMAL FINDINGS.
+- Dùng NORMAL COMPANION FINDINGS để phân biệt thay đổi tương đối và tuyệt đối.
+- Nếu VERIFIED CURATED OUTLINE có nội dung, phải tuân thủ các mục
+  supported_interpretations, unsupported_interpretations và companion_normal_findings.
+- Nếu runtime_guardrails.etiology_supported_by_current_evidence = false, tuyệt đối không
+  nêu nhiễm trùng, viêm, stress, thuốc hoặc nguyên nhân bệnh lý như một diễn giải của pattern.
+  Chỉ được nói chưa đủ dữ liệu xác định nguyên nhân và liệt kê chúng dưới dạng thông tin cần hỏi thêm.
+- Nếu runtime_guardrails.etiology_support_scope = "evaluation_context_only", chỉ được nói
+  một tình trạng là bối cảnh bác sĩ thường kiểm tra hoặc cần loại trừ; không được nói
+  đó là nguyên nhân của ca hiện tại hay dùng cụm "có khả năng bị".
+- Không được biến nội dung recommended_followup_questions thành kết luận lâm sàng.
 - Không bịa nguồn, tên sách hoặc số trang.
-- Không chẩn đoán chắc chắn; chỉ dùng các từ: "gợi ý", "phù hợp với", "có thể liên quan đến", "cần đối chiếu lâm sàng".
+- Không chẩn đoán chắc chắn. Khi chỉ đang mô tả đúng bất thường đã đo được, ưu tiên
+  cách nói dễ hiểu như "cho thấy" hoặc "nghĩa là". Chỉ dùng "gợi ý", "có thể"
+  cho nhận định chưa chắc chắn. Hạn chế lặp cụm "phù hợp với".
 - Nếu evidence không đủ cho một nhận định, phải nói rõ là bằng chứng còn hạn chế và không suy diễn quá xa.
+- Citation phải hỗ trợ trực tiếp cho đúng nhận định đứng trước nó; evidence chỉ định nghĩa
+  một chỉ số không được dùng để khẳng định nguyên nhân của bất thường đó.
+- Không áp dụng evidence dành riêng cho trẻ em, thai kỳ hoặc nhóm tuổi cụ thể khi case
+  không cung cấp thông tin nhân khẩu học tương ứng.
 - Khi một chỉ số bất thường không được evidence hỗ trợ rõ ràng, hãy nói rõ rằng hiện chưa đủ dữ liệu để kết luận nguyên nhân cụ thể.
 - Ưu tiên diễn giải theo các bất thường có liên quan trực tiếp với nhau; tránh kết nối các chỉ số riêng lẻ quá rộng nếu không có căn cứ.
 - Không dùng câu như "đây chắc chắn là...", "bệnh này xác định là...", hoặc "nguy hiểm ngay lập tức" nếu chưa có dấu hiệu cấp độ cao.
 - Không kê thuốc, không đưa liều điều trị.
 - Không nhắc lại prompt.
 - Không dùng dấu "...".
-- Trả lời gọn, rõ, phù hợp để hiển thị trực tiếp cho user.
+- Trả lời ngắn gọn, dễ hiểu, phù hợp để hiển thị trực tiếp cho người dùng
+  không có chuyên môn y khoa. Tránh lặp cùng một ý ở nhiều mục.
+- Không tạo mục "Hạn chế". Chỉ lồng ghép thông tin thực sự cần bổ sung vào mục
+  "Bạn nên làm gì?" bằng một câu ngắn.
+- Không liệt kê xét nghiệm hoặc thông tin không liên quan trực tiếp đến phiếu hiện tại.
+- Phải đề cập mọi chỉ số trong ABNORMAL FINDINGS. Với bất thường nhẹ không có
+  evidence trực tiếp, chỉ mô tả mức lệch và khuyến nghị đối chiếu/lặp lại, không gán nguyên nhân.
+- Khi có cả trị số tuyệt đối và tỷ lệ phần trăm, dùng trị số tuyệt đối làm căn cứ chính;
+  tỷ lệ phần trăm chỉ là dấu hiệu đi kèm, không dùng đơn độc để kết luận.
+- Một chỉ số chỉ vượt ngưỡng rất ít phải được mô tả là "tăng rất nhẹ" hoặc "giảm rất nhẹ";
+  cần đối chiếu các chỉ số liên quan và chất lượng mẫu trước khi gán ý nghĩa bệnh lý.
+- Không viết theo cấu trúc lặp nghĩa như "tăng bạch cầu trung tính gợi ý tăng bạch cầu
+  trung tính". Hãy nói trực tiếp: "WBC cao kèm NEUT# cao cho thấy số lượng bạch cầu
+  trung tính trong máu cao hơn bình thường [citation]."
 
 ========================
 ABNORMAL FINDINGS
 {abnormal_text}
 
+NORMAL COMPANION FINDINGS
+{companion_text}
+
 DETECTED PATTERNS
 {pattern_text}
+
+VERIFIED CURATED OUTLINE
+{curated_text}
 
 GRAPH REASONING PATHS
 {graph_text}
@@ -2216,39 +2282,39 @@ EVIDENCE
 {evidence_text}
 ========================
 
-YÊU CẦU OUTPUT:
+YÊU CẦU OUTPUT (chỉ dùng 4 mục sau):
 
-### 1. Tóm tắt bất thường
-- Liệt kê ngắn các chỉ số bất thường chính.
-- Ghi giá trị, đơn vị và khoảng tham chiếu nếu có.
+### 1. Nhận định chính
+- Mở đầu bằng "Điểm cần chú ý nhất là..." và nêu cụm bất thường quan trọng nhất.
+- Không chép lại toàn bộ bảng giá trị vì người dùng đã nhìn thấy bảng xét nghiệm.
+- Xếp các kết quả thành mức ưu tiên: bất thường chính, thay đổi đi kèm và sai lệch rất nhẹ.
+- Nói rõ chỉ số phần trăm chỉ là thay đổi tương đối khi số lượng tuyệt đối vẫn bình thường.
 
-### 2. Ý nghĩa lâm sàng
-- Giải thích ý nghĩa của các bất thường theo cụm xét nghiệm, nhưng chỉ nêu những kết nối có căn cứ rõ từ EVIDENCE.
-- Chỉ giải thích các xét nghiệm có trong ABNORMAL FINDINGS.
-- Ưu tiên kết nối các chỉ số liên quan trực tiếp với nhau; nếu một chỉ số như MCHC, RDW, hoặc chỉ số khác không được evidence hỗ trợ rõ ràng, đừng suy diễn xa về nguyên nhân.
-- Nếu chưa đủ bằng chứng để kết luận về một nguyên nhân cụ thể, hãy nói rõ: "hiện chưa đủ dữ liệu để xác định nguyên nhân cụ thể".
-- Mỗi nhận định y khoa quan trọng cần có citation dạng [1], [2], [3].
+### 2. Kết quả này thường liên quan đến gì?
+- Đây là phần người dùng quan tâm nhất. Nếu evidence hỗ trợ nguyên nhân/bối cảnh, nêu tối đa
+  2 nhóm nguyên nhân thường gặp, dùng ngôn ngữ xác suất và citation trực tiếp.
+- Nếu evidence chỉ định nghĩa chỉ số, không bịa nguyên nhân. Viết ngắn: "Phiếu xét nghiệm
+  xác nhận thay đổi này nhưng chưa cho biết nguyên nhân; cần đối chiếu triệu chứng và bệnh sử."
+- Không lặp lại định nghĩa đã nói trong mục 1.
+- Nếu evidence nói về "persisting leukocytosis", chỉ được nhắc nguy cơ bệnh huyết học theo điều kiện:
+  WBC tăng kéo dài qua các lần xét nghiệm và không có nguyên nhân nhiễm trùng rõ. Không được
+  suy ra ung thư máu hoặc bệnh tăng sinh tủy từ một phiếu đơn lẻ.
+- Nếu evidence về đánh giá leukocytosis nhắc tới nhiễm trùng, có thể nói nhiễm trùng là một
+  bối cảnh bác sĩ sẽ kiểm tra; không được nói người dùng chắc chắn đang nhiễm trùng.
+- Với sai lệch rất nhẹ như MCHC 362 so với giới hạn 360, chỉ cần một câu: thường ưu tiên
+  xem cùng các chỉ số hồng cầu khác và chất lượng mẫu, không xem là kết luận chính.
 
-### 3. Pattern gợi ý
-- Nêu tối đa 2 pattern quan trọng nhất nếu có.
-- Chỉ nêu pattern thật sự phù hợp với các bất thường trong ABNORMAL FINDINGS.
-- Không nêu pattern cần xét nghiệm không xuất hiện trong case.
-- Không dùng pattern như bằng chứng chắc chắn; chỉ nói pattern "gợi ý" hoặc "phù hợp với" dữ liệu hiện tại.
-- Dùng ngôn ngữ thận trọng: "gợi ý", "phù hợp với", "có thể liên quan đến".
+### 3. Bạn nên làm gì?
+- Viết tối đa 2 gạch đầu dòng, xếp theo thứ tự ưu tiên và chỉ nêu hành động thiết thực.
+- Khuyên trao đổi với bác sĩ cùng triệu chứng, bệnh sử và thuốc đang dùng.
+- Chỉ nhắc CRP, phết máu hoặc lặp CBC nếu có triệu chứng phù hợp hoặc bác sĩ chỉ định;
+  không viết như một yêu cầu mặc định.
 
-### 4. Lưu ý an toàn
-- Nếu có bất thường rõ ràng và có dấu hiệu cấp độ cao, nhắc người dùng nên đi khám sớm hoặc cấp cứu phù hợp.
-- Nếu chưa thấy dấu hiệu cấp độ cao rõ ràng, hãy nói rằng vẫn cần đối chiếu với triệu chứng, bệnh sử, thuốc đang dùng và bác sĩ, thay vì kết luận quá mức.
-
-### 5. Nên làm gì tiếp theo
-- Gợi ý các bước đánh giá tiếp theo hợp lý và cụ thể, ví dụ: kiểm tra lại xét nghiệm, xét nghiệm bổ sung, trao đổi bác sĩ.
-- Nếu chưa đủ dữ liệu, ưu tiên đề xuất lấy thêm triệu chứng, bệnh sử, thuốc đang dùng và xét nghiệm liên quan.
-- Không kê thuốc.
-- Không đưa phác đồ điều trị.
-
-### 6. Hạn chế
-- Nêu những thông tin còn thiếu làm hạn chế diễn giải.
-- Ví dụ: thiếu triệu chứng, bệnh sử, thuốc đang dùng, xét nghiệm nước tiểu, eGFR, tuổi/giới, hoặc kết quả lặp lại.
+### 4. Khi nào cần đi khám ngay?
+- Nói rõ không thể đánh giá mức độ nặng chỉ từ phiếu xét nghiệm.
+- Chỉ liệt kê ngắn các triệu chứng cảnh báo thực sự phù hợp với dữ liệu hiện có.
+- Không khẳng định người dùng an toàn hoặc "không có dấu hiệu nặng".
+- Chỉ viết 1 gạch đầu dòng ngắn, không tạo danh sách cảnh báo dài.
 
 Lưu ý citation:
 - Chỉ dùng citation dạng [1], [2], [3], [4], [5], [6] tương ứng với thứ tự trong EVIDENCE.

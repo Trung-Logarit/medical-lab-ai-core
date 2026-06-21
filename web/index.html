@@ -51,6 +51,24 @@
         .message { max-width: 85%; padding: 12px 18px; border-radius: 15px; line-height: 1.6; font-size: 15px; position: relative; }
         .ai-message { background: var(--light-blue); color: var(--text-main); align-self: flex-start; border-bottom-left-radius: 2px; }
         .user-message { background: var(--primary-blue); color: white; align-self: flex-end; border-bottom-right-radius: 2px; }
+        .message-heading { font-weight: 700; margin: 12px 0 4px; color: #173a5e; }
+        .evidence-card {
+            margin: 8px 0; padding: 10px 12px; background: rgba(255,255,255,0.72);
+            border: 1px solid #b8d8ee; border-left: 4px solid var(--primary-blue);
+            border-radius: 8px;
+        }
+        .evidence-original { line-height: 1.55; }
+        .btn-translate-evidence {
+            margin-top: 8px; padding: 6px 10px; border: 1px solid var(--primary-blue);
+            border-radius: 6px; background: white; color: var(--primary-blue);
+            cursor: pointer; font-size: 12px; font-weight: 600;
+        }
+        .btn-translate-evidence:hover { background: #edf6fc; }
+        .evidence-translation {
+            display: none; margin-top: 8px; padding: 9px 10px; border-radius: 6px;
+            background: #fff8df; border: 1px solid #ead48a; color: #3d3a2d;
+        }
+        .translation-label { display: block; font-weight: 700; color: #775c00; margin-bottom: 3px; }
 
         .chat-input-area {
             padding: 15px; border-top: 1px solid #eee; display: flex; gap: 10px; background: white;
@@ -209,9 +227,12 @@
             return 'sess_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
         }
         let USER_SESSION_ID = generateSessionId();
+        let ACTIVE_DEMO_CASE_ID = null;
 
         let currentOcrData = [];
         let isSubmitted = false;
+        let evidenceItemCounter = 0;
+        const evidenceTranslationItems = new Map();
 
         // KIẾN TRÚC MỚI (CHỈ 2 PORT)
         const OCR_API_BASE = `${window.location.origin}/api/v1`;
@@ -289,8 +310,10 @@
 
         function resetSessionAndUI() {
             USER_SESSION_ID = generateSessionId(); 
+            ACTIVE_DEMO_CASE_ID = null;
             currentOcrData = [];
             isSubmitted = false;
+            evidenceTranslationItems.clear();
 
             document.getElementById('chatHistory').innerHTML = `
                 <div class="message ai-message">
@@ -331,9 +354,75 @@
             return msgDiv;
         }
 
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
         function formatText(text) {
-            let html = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-            return html.replace(/\n/g, '<br>');
+            return String(text ?? '').split('\n').map(line => {
+                const evidenceMatch = line.match(/^\[(\d+)\]\s+(.+)\.\s+[“"](.+)[”"]\s*$/);
+                if (evidenceMatch) {
+                    const itemId = `evidence_${++evidenceItemCounter}`;
+                    evidenceTranslationItems.set(itemId, { text: evidenceMatch[3] });
+                    return `
+                        <div class="evidence-card" id="${itemId}">
+                            <div class="evidence-original"><strong>[${evidenceMatch[1]}]</strong> ${escapeHtml(evidenceMatch[2])}. “${escapeHtml(evidenceMatch[3])}”</div>
+                            <button type="button" class="btn-translate-evidence" onclick="toggleEvidenceTranslation('${itemId}', this)">🌐 Dịch sang tiếng Việt</button>
+                            <div class="evidence-translation"><span class="translation-label">Bản dịch hỗ trợ:</span><span class="translation-text"></span></div>
+                        </div>`;
+                }
+
+                const headingMatch = line.match(/^###\s+(.+)$/);
+                if (headingMatch) {
+                    return `<div class="message-heading">${escapeHtml(headingMatch[1])}</div>`;
+                }
+
+                let safeLine = escapeHtml(line).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+                return safeLine ? `${safeLine}<br>` : '<br>';
+            }).join('');
+        }
+
+        async function toggleEvidenceTranslation(itemId, button) {
+            const item = evidenceTranslationItems.get(itemId);
+            const card = document.getElementById(itemId);
+            if (!item || !card) return;
+
+            const box = card.querySelector('.evidence-translation');
+            const translationText = card.querySelector('.translation-text');
+            if (item.translation) {
+                const isVisible = box.style.display !== 'none' && box.style.display !== '';
+                box.style.display = isVisible ? 'none' : 'block';
+                button.textContent = isVisible ? '🌐 Xem bản dịch tiếng Việt' : 'Ẩn bản dịch';
+                return;
+            }
+
+            button.disabled = true;
+            button.textContent = 'Đang dịch...';
+            try {
+                const response = await fetch(`${CHAT_API_BASE}/translate-evidence`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: item.text })
+                });
+                const data = await response.json();
+                if (data.status !== 'success') throw new Error(data.message || 'Không thể dịch dẫn chứng.');
+
+                item.translation = data.translation;
+                translationText.textContent = data.translation;
+                box.style.display = 'block';
+                button.textContent = 'Ẩn bản dịch';
+            } catch (error) {
+                translationText.textContent = `Không thể tải bản dịch: ${error.message}`;
+                box.style.display = 'block';
+                button.textContent = 'Thử dịch lại';
+            } finally {
+                button.disabled = false;
+            }
         }
 
         function formatRefRange(min, max, unit) {
@@ -405,6 +494,7 @@
             const btnUpload = document.getElementById('btn-upload');
             const uploadBox = document.getElementById('upload-box');
             if (fileInput.files.length === 0) return;
+            ACTIVE_DEMO_CASE_ID = null;
 
             btnUpload.disabled = true;
             fileInput.disabled = true;
@@ -467,7 +557,8 @@
                 for (const report of data.reports || []) {
                     const option = document.createElement('option');
                     option.value = report.id;
-                    option.textContent = `${report.id} — ${report.indicator_count} chỉ số, ${report.abnormal_count} bất thường`;
+                    const badge = report.verified_v3 ? ' ★ V3 verified' : '';
+                    option.textContent = `${report.id}${badge} — ${report.indicator_count} chỉ số, ${report.abnormal_count} bất thường`;
                     select.appendChild(option);
                 }
             } catch (error) {
@@ -487,6 +578,7 @@
                 if (payload.status !== 'success') throw new Error('Invalid demo report response');
 
                 currentOcrData = payload.report.data || [];
+                ACTIVE_DEMO_CASE_ID = reportId;
                 isSubmitted = false;
                 currentOcrData.forEach((item, index) => {
                     item.is_editing_ref = false;
@@ -703,7 +795,8 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
                         indicators: detailedIndicators,
-                        session_id: USER_SESSION_ID
+                        session_id: USER_SESSION_ID,
+                        demo_case_id: ACTIVE_DEMO_CASE_ID
                     })
                 });
 

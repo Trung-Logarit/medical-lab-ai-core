@@ -5,10 +5,11 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,7 +21,9 @@ from pydantic import BaseModel
 BASE_DIR = Path(__file__).resolve().parent
 INDEX_PATH = BASE_DIR / "web" / "index.html"
 DEMO_REPORTS_PATH = BASE_DIR / "data" / "demo" / "all_results_data_ocr.jsonl"
+TRANSLATION_CACHE_PATH = BASE_DIR / "data" / "cache" / "evidence_translations.json"
 load_dotenv(BASE_DIR / ".env")
+_translation_cache_lock = threading.Lock()
 
 
 @asynccontextmanager
@@ -45,11 +48,16 @@ app.add_middleware(
 class ConfirmedData(BaseModel):
     indicators: list[dict[str, Any]]
     session_id: str
+    demo_case_id: Optional[str] = None
 
 
 class ChatMessage(BaseModel):
     text: str
     session_id: str
+
+
+class EvidenceTranslationRequest(BaseModel):
+    text: str
 
 
 @lru_cache(maxsize=1)
@@ -66,6 +74,26 @@ def load_demo_reports() -> dict[str, dict[str, Any]]:
             if report_id:
                 reports[report_id] = row
     return reports
+
+
+@lru_cache(maxsize=1)
+def load_translation_cache() -> dict[str, str]:
+    if not TRANSLATION_CACHE_PATH.exists():
+        return {}
+    try:
+        return json.loads(TRANSLATION_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_translation_cache(cache: dict[str, str]) -> None:
+    TRANSLATION_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = TRANSLATION_CACHE_PATH.with_suffix(".tmp")
+    temp_path.write_text(
+        json.dumps(cache, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temp_path.replace(TRANSLATION_CACHE_PATH)
 
 
 @app.get("/", include_in_schema=False)
@@ -92,6 +120,12 @@ def api_options(endpoint: str) -> dict[str, str]:
 @app.get("/api/v1/demo-reports")
 def list_demo_reports() -> dict[str, Any]:
     reports = load_demo_reports()
+    try:
+        from medical_lab_ai_core.knowledge_base.clinical_demo_context import available_case_ids
+
+        verified_cases = available_case_ids()
+    except Exception:
+        verified_cases = set()
     items = []
     for report_id, report in reports.items():
         indicators = report.get("data", []) or []
@@ -103,6 +137,7 @@ def list_demo_reports() -> dict[str, Any]:
             "id": report_id,
             "indicator_count": len(indicators),
             "abnormal_count": abnormal_count,
+            "verified_v3": report_id in verified_cases,
         })
     return {"status": "success", "reports": items}
 
@@ -148,7 +183,11 @@ def analyze_report(data: ConfirmedData) -> dict[str, Any]:
         from medical_lab_ai_core.agents.langgraph_chatbot import update_session_memory
         from medical_lab_ai_core.graph_rag.service import analyze_indicators_with_llm
 
-        summary = analyze_indicators_with_llm(data.indicators, data.session_id)
+        summary = analyze_indicators_with_llm(
+            data.indicators,
+            data.session_id,
+            demo_case_id=data.demo_case_id,
+        )
         update_session_memory(
             session_id=data.session_id,
             active_report_data=data.indicators,
@@ -166,5 +205,45 @@ def chat(msg: ChatMessage) -> dict[str, Any]:
 
         result = handle_chat(msg.text, msg.session_id)
         return {"status": "success", **result}
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
+
+
+@app.post("/api/v1/translate-evidence")
+def translate_evidence(data: EvidenceTranslationRequest) -> dict[str, Any]:
+    source_text = " ".join(str(data.text or "").split()).strip()
+    if not source_text:
+        return {"status": "error", "message": "Dẫn chứng đang trống."}
+    if len(source_text) > 2500:
+        return {"status": "error", "message": "Dẫn chứng quá dài để dịch."}
+
+    cache_key = source_text.casefold()
+    with _translation_cache_lock:
+        cached = load_translation_cache().get(cache_key)
+    if cached:
+        return {"status": "success", "translation": cached, "cached": True}
+
+    try:
+        from medical_lab_ai_core.graph_rag.service import call_llm
+
+        prompt = f"""
+Dịch nguyên văn y khoa sau từ tiếng Anh sang tiếng Việt.
+Yêu cầu:
+- Dịch trung thành, không thêm, bớt hoặc diễn giải.
+- Giữ nguyên số liệu, đơn vị, tên viết tắt và thuật ngữ xét nghiệm cần thiết.
+- Chỉ trả về bản dịch tiếng Việt, không mở đầu, không ghi chú.
+
+Nguyên văn:
+{source_text}
+""".strip()
+        translation = " ".join(call_llm(prompt).split()).strip()
+        if not translation:
+            raise RuntimeError("Mô hình trả về bản dịch trống.")
+
+        with _translation_cache_lock:
+            cache = load_translation_cache()
+            cache[cache_key] = translation
+            save_translation_cache(cache)
+        return {"status": "success", "translation": translation, "cached": False}
     except Exception as exc:
         return {"status": "error", "message": str(exc)}
