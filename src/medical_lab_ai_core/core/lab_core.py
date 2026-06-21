@@ -1575,6 +1575,7 @@ def rerank_evidence(evidence: list[dict], reasoning_context: dict) -> list[dict]
 
     for e in evidence:
         score = safe_float(e.get("score"), 0.0)
+        evidence_text = str(e.get("text") or "").lower()
 
         e_tests = set(e.get("tests", []))
         e_conditions = set(e.get("conditions", []))
@@ -1599,10 +1600,32 @@ def rerank_evidence(evidence: list[dict], reasoning_context: dict) -> list[dict]
         elif e.get("type") == "definition":
             score += 0.03
 
+        # Người dùng quan tâm nguyên nhân, nguy cơ và bước đánh giá hơn
+        # các đoạn chỉ định nghĩa thuật ngữ. Ưu tiên các trích đoạn
+        # có khả năng hỗ trợ trực tiếp cho phần "liên quan đến gì".
+        causal_terms = (
+            "due to", "cause", "caused by", "indicates", "associated with",
+            "viral", "bacterial", "infection", "inflammation", "deficiency",
+            "helminth", "atopic", "allergic", "risk of",
+        )
+        action_terms = (
+            "evaluation", "should include", "examination", "blood smear",
+            "persistent", "persisting", "follow-up", "repeat",
+        )
+        definition_terms = (
+            "refers to", "is defined as", "defined as", "is an increase in",
+        )
+        if any(term in evidence_text for term in causal_terms):
+            score += 0.55
+        if any(term in evidence_text for term in action_terms):
+            score += 0.35
+        if any(term in evidence_text for term in definition_terms):
+            score -= 0.20
+
         # Penalty Neo4j chunk không nhắc đến test nào trong phiếu
         if e.get("retrieval_path", "").startswith("neo4j"):
             test_keywords = {t.lower() for t in abnormal_tests}
-            text_lower = str(e.get("text", "")).lower()
+            text_lower = evidence_text
             keyword_hits = sum(1 for kw in test_keywords if kw in text_lower)
             if keyword_hits == 0:
                 score -= 0.25
@@ -2295,6 +2318,10 @@ YÊU CẦU OUTPUT (chỉ dùng 4 mục sau):
   2 nhóm nguyên nhân thường gặp, dùng ngôn ngữ xác suất và citation trực tiếp.
 - Nếu evidence chỉ định nghĩa chỉ số, không bịa nguyên nhân. Viết ngắn: "Phiếu xét nghiệm
   xác nhận thay đổi này nhưng chưa cho biết nguyên nhân; cần đối chiếu triệu chứng và bệnh sử."
+- Không nêu bệnh hoặc nhóm nguyên nhân nào không xuất hiện rõ trong quote của EVIDENCE;
+  đặc biệt không tự thêm bệnh tự miễn, ung thư hoặc nhiễm trùng từ kiến thức chung.
+- Mỗi cụm chỉ số phải gắn với đúng evidence của nó: LYM# không dùng evidence của EOS#;
+  thiếu máu hồng cầu nhỏ không dùng đoạn chỉ định nghĩa thiếu máu để khẳng định nguyên nhân.
 - Không lặp lại định nghĩa đã nói trong mục 1.
 - Nếu evidence nói về "persisting leukocytosis", chỉ được nhắc nguy cơ bệnh huyết học theo điều kiện:
   WBC tăng kéo dài qua các lần xét nghiệm và không có nguyên nhân nhiễm trùng rõ. Không được
