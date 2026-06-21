@@ -5,6 +5,8 @@ import unicodedata
 import difflib
 import logging
 import math
+import os
+import threading
 import time
 from pathlib import Path
 
@@ -66,22 +68,41 @@ COLUMN_KEYWORDS = {
 logger = logging.getLogger(__name__)
 ocr_engine = None
 ocr_cpu = None
+_ocr_init_lock = threading.Lock()
 
 
 def get_ocr_engine():
     global ocr_engine
     if PaddleOCR is None or paddle is None:
         raise RuntimeError("paddleocr and paddlepaddle are required for OCR inference.")
-    if ocr_engine is None:
-        logger.info("Initializing PaddleOCR PP-OCRv5 engine.")
+    if ocr_engine is not None:
+        return ocr_engine
+
+    with _ocr_init_lock:
+        if ocr_engine is not None:
+            return ocr_engine
+
+        profile = os.getenv("OCR_MODEL_PROFILE", "mobile").strip().lower()
+        detection_model = (
+            "PP-OCRv5_server_det" if profile == "server" else "PP-OCRv5_mobile_det"
+        )
+        device = os.getenv("OCR_DEVICE", "auto").strip().lower()
+        if device == "auto":
+            device = "gpu" if paddle.device.is_compiled_with_cuda() else "cpu"
+
+        logger.info(
+            "Initializing PaddleOCR profile=%s detection=%s device=%s.",
+            profile, detection_model, device,
+        )
         ocr_engine = PaddleOCR(
-            device="gpu" if paddle.device.is_compiled_with_cuda() else "cpu",
+            device=device,
             lang="vi",
+            text_detection_model_name=detection_model,
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=False,
             ocr_version="PP-OCRv5",
-            enable_mkldnn=False
+            enable_mkldnn=False,
         )
     return ocr_engine
 

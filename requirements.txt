@@ -13,3 +13,7 @@ neo4j
 langgraph
 langfuse
 google-genai
+fastapi
+uvicorn
+pydantic
+python-multipart

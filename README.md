@@ -71,6 +71,8 @@ medical-lab-ai-core/
 ├── .env.example                     # Safe placeholder configuration
 ├── .gitignore
 ├── requirements.txt
+├── REFACTOR_PLAN.md
+└── REFACTOR_REPORT.md
 ```
 
 Generated outputs, raw source documents, database snapshots, checkpoints, local environments, and secret files are intentionally excluded.
@@ -137,6 +139,20 @@ All runtime configuration is provided through environment variables. Use `.env.e
 | `REQUEST_TIMEOUT` | Optional | Default HTTP request timeout | `300` |
 
 ## Usage
+
+### Web Demo
+
+The migrated browser demo supports report image upload, OCR result editing,
+confirmation and analysis, and follow-up chat in the same session.
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m uvicorn app:app --host 127.0.0.1 --port 8000
+```
+
+Open `http://127.0.0.1:8000` in a browser. Configure at least one LLM provider
+in `.env`; full GraphRAG analysis additionally requires the processed knowledge
+base plus reachable Qdrant and Neo4j services.
 
 The commands below match the repository layout. Commands that depend on Qdrant, Neo4j, raw documents, or LLM credentials require those assets and services to be supplied separately.
 

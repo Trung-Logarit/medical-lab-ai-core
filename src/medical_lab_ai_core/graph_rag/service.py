@@ -147,7 +147,9 @@ def semantic_route_intent(query: str, has_report: bool = False) -> str:
 def call_gemini(prompt):
     if genai is None or types is None:
         raise RuntimeError("google-genai is required for Gemini generation.")
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not configured.")
     client = genai.Client(api_key=api_key)
     res = client.models.generate_content(
         model=GEMINI_MODEL, contents=prompt,
@@ -157,7 +159,9 @@ def call_gemini(prompt):
 
 @observe(as_type="generation", name="OpenRouter Generation")
 def call_deepseek(prompt):
-    api_key = os.getenv("OPENROUTER_API_KEY")
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is not configured.")
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     data = {"model": OPENROUTER_MODEL, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 2000}
     res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=40)
@@ -205,7 +209,9 @@ def call_colab_llm(prompt):
     return answer.strip()
 @observe(as_type="generation", name="Groq Generation")
 def call_groq(prompt):
-    api_key = os.getenv("GROQ_API_KEY")
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY is not configured.")
     groq_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -226,30 +232,31 @@ def call_groq(prompt):
 
 @observe(as_type="span", name="LLM Execution")
 def call_llm(prompt):
-    try:
-        answer = call_groq(prompt)
-        return answer
-    except Exception as e:
-        logger.warning("Groq generation failed; falling back to OpenRouter: %s", e)
+    providers = []
+    if os.getenv("GROQ_API_KEY", "").strip():
+        providers.append(("Groq", call_groq))
+    if os.getenv("OPENROUTER_API_KEY", "").strip():
+        providers.append(("OpenRouter", call_deepseek))
+    if COLAB_LLM_URL:
+        providers.append(("Colab", call_colab_llm))
+    if os.getenv("GEMINI_API_KEY", "").strip():
+        providers.append(("Gemini", call_gemini))
 
-    try:
-        answer = call_deepseek(prompt)
-        return answer
-    except Exception as e:
-        logger.warning("OpenRouter generation failed; falling back to Colab: %s", e)
+    if not providers:
+        raise RuntimeError(
+            "Chưa cấu hình LLM. Hãy thêm ít nhất một API key vào file .env "
+            "(GROQ_API_KEY, OPENROUTER_API_KEY hoặc GEMINI_API_KEY)."
+        )
 
-    try:
-        answer = call_colab_llm(prompt)
-        return answer
-    except Exception as colab_ex:
-        logger.warning("Colab generation failed; falling back to Gemini: %s", colab_ex)
+    errors = []
+    for name, provider in providers:
+        try:
+            return provider(prompt)
+        except Exception as exc:
+            errors.append(f"{name}: {exc}")
+            logger.warning("%s generation failed: %s", name, exc)
 
-    try:
-        answer = call_gemini(prompt)
-        return answer
-    except Exception as gemini_ex:
-        logger.error("All LLM providers failed: %s", gemini_ex)
-        return "Hệ thống AI đang bận. Vui lòng thử lại sau."
+    raise RuntimeError("Tất cả LLM provider đã cấu hình đều lỗi: " + " | ".join(errors))
 
 
 # =========================================================
@@ -357,7 +364,18 @@ def analyze_indicators_with_llm(user_indicators: list, session_id: str = None) -
     logger.info("Querying Qdrant vector evidence.")
     vector_evidence = lab_core.retrieve_evidence(ctx)
 
-    combined_evidence = lab_core.dedup_evidence(graph_evidence + vector_evidence)
+    try:
+        from medical_lab_ai_core.knowledge_base.curated_evidence import retrieve_for_report_context
+
+        curated_evidence = retrieve_for_report_context(ctx, max_items=config.MAX_FINAL_EVIDENCE)
+        logger.info("Curated QA100 packs returned %s evidence items.", len(curated_evidence))
+    except Exception as exc:
+        logger.warning("Curated QA100 evidence retrieval skipped: %s", exc)
+        curated_evidence = []
+
+    combined_evidence = lab_core.dedup_evidence(
+        curated_evidence + graph_evidence + vector_evidence
+    )
     final_evidence = lab_core.rerank_evidence(combined_evidence, ctx)[:config.MAX_FINAL_EVIDENCE]
 
     graph_reasoning_paths = lab_core.enrich_reasoning_paths(ctx, final_evidence)

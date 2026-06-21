@@ -1017,6 +1017,176 @@ def extract_abnormal_items(items: list[dict]) -> list[dict]:
 
 
 # =========================================================
+# STATIC PATTERNS / REAL-TIME REPORT AUGMENTATION
+# =========================================================
+
+def _condition_slug(text: str) -> str:
+    text = str(text or "").lower().strip()
+    text = re.sub(r"[^\w]+", "_", text, flags=re.UNICODE)
+    return re.sub(r"_+", "_", text).strip("_")
+
+
+def _context_has_finding(ctx: dict, panel: str, test: str, status: str) -> bool:
+    panel = str(panel).upper()
+    test = normalize_test_name(test, panel)
+    status = normalize_status(status)
+    return any(
+        str(item.get("panel", "")).upper() == panel
+        and item.get("test") == test
+        and normalize_status(item.get("status")) == status
+        for item in ctx.get("abnormal_items", [])
+    )
+
+
+def _context_tags(ctx: dict) -> set[str]:
+    return {
+        f"{item.get('test')}_{normalize_status(item.get('status')).capitalize()}"
+        for item in ctx.get("abnormal_items", [])
+        if item.get("test") and normalize_status(item.get("status"))
+    }
+
+
+def match_cbc_demo_patterns(ctx: dict, demo_patterns: list[dict]) -> list[dict]:
+    matches: list[dict] = []
+    for row in demo_patterns or []:
+        raw_input = row.get("input", {}) or {}
+        if not isinstance(raw_input, dict) or not raw_input:
+            continue
+        required = [
+            (normalize_test_name(test, "CBC"), normalize_status(status))
+            for test, status in raw_input.items()
+        ]
+        hits = sum(_context_has_finding(ctx, "CBC", test, status) for test, status in required)
+        ratio = hits / len(required)
+        if hits == 0 or (len(required) > 1 and ratio < 0.6) or (len(required) == 1 and ratio < 1.0):
+            continue
+
+        patterns = row.get("patterns", []) or [{
+            "pattern_name": row.get("case_id", "CBC demo pattern"),
+            "interpretation": row.get("combined_interpretation", ""),
+            "match_score": ratio,
+        }]
+        for pattern in patterns:
+            name = pattern.get("pattern_name", "CBC demo pattern")
+            matches.append({
+                "pattern_id": f"cbc_static_{_condition_slug(name)}",
+                "pattern_name": name,
+                "panel": "CBC",
+                "conditions": [_condition_slug(name)],
+                "description": pattern.get("interpretation") or row.get("combined_interpretation", ""),
+                "confidence": round(safe_float(pattern.get("match_score"), ratio), 2),
+                "matched_required": [f"{test}_{status}" for test, status in required],
+                "matched_optional": [],
+                "source": "cbc_demo_cases",
+                "static_rule": True,
+            })
+    return matches
+
+
+def match_biochem_static_patterns(ctx: dict, biochem_patterns: dict) -> list[dict]:
+    matches: list[dict] = []
+    tags = _context_tags(ctx)
+    single_rules = (biochem_patterns or {}).get("single_test_patterns", {}) or {}
+
+    for item in ctx.get("abnormal_items", []):
+        if item.get("panel") != "BIOCHEM":
+            continue
+        test = item.get("test")
+        status = normalize_status(item.get("status"))
+        rule = (single_rules.get(test, {}) or {}).get(status, {}) or {}
+        if not rule:
+            continue
+        label = rule.get("label") or f"{test} {status}"
+        matches.append({
+            "pattern_id": f"biochem_single_{test}_{status}",
+            "pattern_name": label,
+            "panel": "BIOCHEM",
+            "conditions": [_condition_slug(label)],
+            "description": rule.get("clinical_meaning") or rule.get("note") or "",
+            "confidence": 0.85,
+            "matched_required": [f"{test}_{status}"],
+            "matched_optional": [],
+            "source": "biochem_patterns_single",
+            "static_rule": True,
+            "extra": {
+                "associated_tests": rule.get("associated_tests", []),
+                "clinical_flags": rule.get("clinical_flags", []),
+                "causes": rule.get("causes", []),
+            },
+        })
+
+    for combo in (biochem_patterns or {}).get("pattern_combinations", []) or []:
+        required = combo.get("required_tags", []) or []
+        optional = combo.get("optional_tags", []) or []
+        required_hits = [tag for tag in required if tag in tags]
+        optional_hits = [tag for tag in optional if tag in tags]
+        minimum = int(combo.get("confidence_required", 1) or 1)
+        if required and len(required_hits) < len(required):
+            continue
+        if not required and len(optional_hits) < minimum:
+            continue
+        total = max(len(required) + len(optional), 1)
+        name = combo.get("name", "BIOCHEM combination pattern")
+        matches.append({
+            "pattern_id": combo.get("pattern_id", "biochem_combo_pattern"),
+            "pattern_name": name,
+            "panel": "BIOCHEM",
+            "conditions": [_condition_slug(combo.get("pattern_id") or name)],
+            "description": combo.get("interpretation", ""),
+            "confidence": round((len(required_hits) + len(optional_hits)) / total, 2),
+            "matched_required": required_hits,
+            "matched_optional": optional_hits,
+            "source": "biochem_patterns_combo",
+            "static_rule": True,
+            "extra": {
+                "next_steps": combo.get("next_steps", []),
+                "sources": combo.get("sources", []),
+                "severity_escalators": combo.get("severity_escalators", {}),
+            },
+        })
+    return matches
+
+
+def build_safety_warnings(ctx: dict, _biochem_patterns: dict) -> list[dict]:
+    thresholds = {
+        "K": [(lambda value: value >= 6.5, "Kali ≥ 6,5 mmol/L: cần được đánh giá y tế khẩn cấp."),
+              (lambda value: value <= 2.5, "Kali ≤ 2,5 mmol/L: cần được đánh giá y tế khẩn cấp.")],
+        "NA": [(lambda value: value <= 120, "Natri ≤ 120 mmol/L: nguy cơ hạ natri máu nặng."),
+               (lambda value: value >= 160, "Natri ≥ 160 mmol/L: nguy cơ tăng natri máu nặng.")],
+        "GLUCOSE": [(lambda value: value < 3.0, "Glucose < 3,0 mmol/L: nguy cơ hạ đường huyết nặng."),
+                    (lambda value: value >= 20, "Glucose ≥ 20 mmol/L: tăng đường huyết nặng.")],
+        "CREATININE": [(lambda value: value >= 354, "Creatinine ≥ 354 µmol/L: cần đánh giá chức năng thận sớm.")],
+        "UREA": [(lambda value: value >= 25, "Urê ≥ 25 mmol/L: cần đánh giá y tế sớm.")],
+    }
+    warnings: list[dict] = []
+    for item in ctx.get("abnormal_items", []):
+        value = safe_float(item.get("value"), None)
+        if value is None:
+            continue
+        for predicate, message in thresholds.get(item.get("test"), []):
+            if predicate(value):
+                warnings.append({
+                    "test": item.get("test"), "value": value,
+                    "unit": item.get("unit", ""), "level": "critical", "message": message,
+                })
+    return warnings
+
+
+def augment_reasoning_context_with_static_patterns(
+    ctx: dict,
+    cbc_demo_patterns: list[dict],
+    biochem_patterns: dict,
+) -> dict:
+    augmented = dict(ctx)
+    augmented["static_context"] = (
+        match_cbc_demo_patterns(augmented, cbc_demo_patterns)
+        + match_biochem_static_patterns(augmented, biochem_patterns)
+    )
+    augmented["safety_warnings"] = build_safety_warnings(augmented, biochem_patterns)
+    return augmented
+
+
+# =========================================================
 # PATTERN DETECTION
 # =========================================================
 
@@ -1601,6 +1771,11 @@ def build_reasoning_paths(reasoning_context: dict, evidence: list[dict]) -> list
     return paths
 
 
+def enrich_reasoning_paths(reasoning_context: dict, evidence: list[dict]) -> list[dict]:
+    """Compatibility entry point used by the real-time GraphRAG service."""
+    return build_reasoning_paths(reasoning_context, evidence)
+
+
 def format_reasoning_paths_for_prompt(reasoning_paths: list[dict]) -> str:
     if not reasoning_paths:
         return "- Không có graph reasoning path rõ ràng."
@@ -1636,6 +1811,86 @@ def format_reasoning_paths_for_prompt(reasoning_paths: list[dict]) -> str:
         lines.append(f"{idx}. Finding: {finding_text} → Pattern/Condition: {pattern_text} → Evidence: {ev_text}")
 
     return "\n".join(lines)
+
+
+def clean_reference_quote(text: str, max_len: int = 360) -> str:
+    cleaned = " ".join(str(text or "").replace("\n", " ").split()).strip()
+    return cleaned[:max_len].rstrip() + " […]" if len(cleaned) > max_len else cleaned
+
+
+def build_references_block(evidence: list[dict]) -> str:
+    if not evidence:
+        return "📚 Tài liệu tham khảo:\n- Không có bằng chứng sách phù hợp để trích dẫn."
+
+    lines = ["📚 Tài liệu tham khảo:"]
+    for index, item in enumerate(evidence[:MAX_FINAL_EVIDENCE], start=1):
+        source = item.get("source", "Unknown source")
+        page = item.get("page")
+        location = f", trang {page}" if page not in (None, "") else ""
+        quote = clean_reference_quote(item.get("text", ""))
+        lines.append(f"[{index}] {source}{location}. “{quote}”")
+    return "\n".join(lines)
+
+
+def describe_knowledge_source(source: str) -> str:
+    source_name = str(source or "Unknown source").strip()
+    normalized = source_name.lower().replace("_", " ")
+    if "harrison" in normalized:
+        return (
+            f"- {source_name}: giáo trình nội khoa quốc tế, trình bày nền tảng bệnh học "
+            "và cách tiếp cận lâm sàng đa chuyên khoa."
+        )
+    if "clinical hematology" in normalized or "clinical hematology" in normalized.replace(".pdf", ""):
+        return (
+            f"- {source_name}: tài liệu huyết học lâm sàng chuyên sâu, tập trung vào "
+            "công thức máu và các rối loạn tế bào máu."
+        )
+    if "henry" in normalized:
+        return (
+            f"- {source_name}: tài liệu quốc tế chuyên về chẩn đoán và quản lý bệnh "
+            "dựa trên xét nghiệm y khoa."
+        )
+    if "tietz" in normalized:
+        return (
+            f"- {source_name}: tài liệu nền tảng quốc tế về hóa sinh lâm sàng và "
+            "các dấu ấn xét nghiệm."
+        )
+    return f"- {source_name}: tài liệu chuyên môn được hệ thống truy xuất cho nội dung trên."
+
+
+def build_source_intro(evidence: list[dict]) -> str:
+    lines = ["📚 Nguồn kiến thức:"]
+    seen_sources: set[str] = set()
+    for item in evidence:
+        source = str(item.get("source") or "Unknown source").strip()
+        key = source.casefold()
+        if key in seen_sources:
+            continue
+        seen_sources.add(key)
+        lines.append(describe_knowledge_source(source))
+    if not seen_sources:
+        lines.append("- Không có tài liệu nào được trích dẫn trực tiếp trong câu trả lời này.")
+    lines.extend([
+        "",
+        "Lưu ý: Nội dung chỉ hỗ trợ diễn giải xét nghiệm, không thay thế chẩn đoán hoặc điều trị của bác sĩ.",
+    ])
+    return "\n".join(lines)
+
+
+def build_user_visible_answer(answer: str, ctx: dict, evidence: list[dict]) -> str:
+    cited_numbers = {int(number) for number in re.findall(r"\[(\d+)\]", str(answer or ""))}
+    if cited_numbers:
+        cited_evidence = [
+            item for index, item in enumerate(evidence, start=1)
+            if index in cited_numbers
+        ]
+    else:
+        cited_evidence = evidence[:3]
+
+    cleaned_answer = mechanical_cleanup_answer(answer)
+    references = build_references_block(cited_evidence)
+    source_intro = build_source_intro(cited_evidence)
+    return f"{cleaned_answer}\n\n{references}\n\n{source_intro}".strip()
 
 
 # =========================================================
@@ -1938,7 +2193,10 @@ Nhiệm vụ:
 - Không bịa xét nghiệm không có trong ABNORMAL FINDINGS.
 - Không bịa nguồn, tên sách hoặc số trang.
 - Không chẩn đoán chắc chắn; chỉ dùng các từ: "gợi ý", "phù hợp với", "có thể liên quan đến", "cần đối chiếu lâm sàng".
-- Nếu evidence không đủ cho một nhận định, phải nói rõ là bằng chứng còn hạn chế.
+- Nếu evidence không đủ cho một nhận định, phải nói rõ là bằng chứng còn hạn chế và không suy diễn quá xa.
+- Khi một chỉ số bất thường không được evidence hỗ trợ rõ ràng, hãy nói rõ rằng hiện chưa đủ dữ liệu để kết luận nguyên nhân cụ thể.
+- Ưu tiên diễn giải theo các bất thường có liên quan trực tiếp với nhau; tránh kết nối các chỉ số riêng lẻ quá rộng nếu không có căn cứ.
+- Không dùng câu như "đây chắc chắn là...", "bệnh này xác định là...", hoặc "nguy hiểm ngay lập tức" nếu chưa có dấu hiệu cấp độ cao.
 - Không kê thuốc, không đưa liều điều trị.
 - Không nhắc lại prompt.
 - Không dùng dấu "...".
@@ -1965,23 +2223,26 @@ YÊU CẦU OUTPUT:
 - Ghi giá trị, đơn vị và khoảng tham chiếu nếu có.
 
 ### 2. Ý nghĩa lâm sàng
-- Giải thích ý nghĩa của các bất thường theo cụm xét nghiệm.
+- Giải thích ý nghĩa của các bất thường theo cụm xét nghiệm, nhưng chỉ nêu những kết nối có căn cứ rõ từ EVIDENCE.
 - Chỉ giải thích các xét nghiệm có trong ABNORMAL FINDINGS.
-- Ưu tiên kết nối các chỉ số liên quan với nhau thay vì diễn giải rời rạc.
+- Ưu tiên kết nối các chỉ số liên quan trực tiếp với nhau; nếu một chỉ số như MCHC, RDW, hoặc chỉ số khác không được evidence hỗ trợ rõ ràng, đừng suy diễn xa về nguyên nhân.
+- Nếu chưa đủ bằng chứng để kết luận về một nguyên nhân cụ thể, hãy nói rõ: "hiện chưa đủ dữ liệu để xác định nguyên nhân cụ thể".
 - Mỗi nhận định y khoa quan trọng cần có citation dạng [1], [2], [3].
 
 ### 3. Pattern gợi ý
 - Nêu tối đa 2 pattern quan trọng nhất nếu có.
 - Chỉ nêu pattern thật sự phù hợp với các bất thường trong ABNORMAL FINDINGS.
 - Không nêu pattern cần xét nghiệm không xuất hiện trong case.
+- Không dùng pattern như bằng chứng chắc chắn; chỉ nói pattern "gợi ý" hoặc "phù hợp với" dữ liệu hiện tại.
 - Dùng ngôn ngữ thận trọng: "gợi ý", "phù hợp với", "có thể liên quan đến".
 
 ### 4. Lưu ý an toàn
-- Nếu có bất thường có thể nguy hiểm, nhắc người dùng nên đi khám sớm hoặc cấp cứu phù hợp.
-- Nếu chưa thấy critical flag rõ ràng, nói rằng vẫn cần đối chiếu với triệu chứng, bệnh sử, thuốc đang dùng và bác sĩ.
+- Nếu có bất thường rõ ràng và có dấu hiệu cấp độ cao, nhắc người dùng nên đi khám sớm hoặc cấp cứu phù hợp.
+- Nếu chưa thấy dấu hiệu cấp độ cao rõ ràng, hãy nói rằng vẫn cần đối chiếu với triệu chứng, bệnh sử, thuốc đang dùng và bác sĩ, thay vì kết luận quá mức.
 
 ### 5. Nên làm gì tiếp theo
-- Gợi ý các bước đánh giá tiếp theo hợp lý, ví dụ: kiểm tra lại xét nghiệm, xét nghiệm bổ sung, trao đổi bác sĩ.
+- Gợi ý các bước đánh giá tiếp theo hợp lý và cụ thể, ví dụ: kiểm tra lại xét nghiệm, xét nghiệm bổ sung, trao đổi bác sĩ.
+- Nếu chưa đủ dữ liệu, ưu tiên đề xuất lấy thêm triệu chứng, bệnh sử, thuốc đang dùng và xét nghiệm liên quan.
 - Không kê thuốc.
 - Không đưa phác đồ điều trị.
 

@@ -9,7 +9,10 @@ from typing import Any, Dict, List, Optional
 # Đặt file này cùng thư mục với chatbot_service.py
 # và đặt biochem_50_book_evidence_pack_v1.json cùng thư mục.
 _BASE_DIR = Path(__file__).resolve().parent
-_DEFAULT_PACK_PATH = _BASE_DIR / "biochem_50_book_evidence_pack_v1.json"
+_DEFAULT_PACK_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "data" / "demo" / "evidence_packs" / "biochem_50_book_evidence_pack_v1.json"
+)
 
 _BIOCHEM50_PACK: Optional[Dict[str, Any]] = None
 logger = logging.getLogger(__name__)
@@ -229,9 +232,10 @@ def get_biochem50_evidence_for_question(user_text: str) -> List[Dict[str, Any]]:
             "tests": ev.get("tests") or case.get("tests") or [],
             "topics": ev.get("topics") or [],
             "conditions": ev.get("conditions") or [],
+            "trust": 0.99,
+            "score": 1.5,
             "origin": "biochem50_local_json",
             "_biochem50_case_id": case.get("id"),
-            "_expected_answer_vi": case.get("expected_answer_vi", ""),
         })
 
     return evidence
@@ -246,7 +250,6 @@ def build_biochem50_prompt_context(user_text: str) -> Optional[str]:
     lines = [
         f"BIOCHEM50_DEMO_CASE_ID: {case.get('id')}",
         f"Question: {case.get('question')}",
-        f"Expected answer guide: {case.get('expected_answer_vi', '')}",
         "Evidence bắt buộc dùng khi liên quan:",
     ]
 

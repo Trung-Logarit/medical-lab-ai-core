@@ -4,7 +4,10 @@ import unicodedata
 from pathlib import Path
 from difflib import SequenceMatcher
 
-CBC50_JSON_PATH = Path(__file__).with_name("cbc_50_book_evidence_pack_v1.json")
+CBC50_JSON_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "data" / "demo" / "evidence_packs" / "cbc_50_book_evidence_pack_v1.json"
+)
 
 _CBC50_PACK = None
 
@@ -157,11 +160,18 @@ def get_cbc50_evidence_for_question(user_text: str):
 
     for ev in evidence:
         normalized.append({
+            "evidence_id": ev.get("evidence_id") or ev.get("id"),
             "source": ev.get("source", "clinical_hematology.pdf"),
             "page": ev.get("page"),
             "text": ev.get("text") or ev.get("quote") or ev.get("content") or "",
             "id": ev.get("id") or ev.get("evidence_id"),
-            "origin": "cbc50_local_json"
+            "panel": ev.get("panel", "CBC"),
+            "tests": ev.get("tests") or case.get("tests") or [],
+            "topics": ev.get("topics") or [],
+            "conditions": ev.get("conditions") or [],
+            "trust": 0.99,
+            "score": 1.5,
+            "origin": "cbc50_local_json",
         })
 
     return normalized

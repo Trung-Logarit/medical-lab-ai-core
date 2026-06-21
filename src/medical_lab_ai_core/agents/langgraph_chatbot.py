@@ -93,6 +93,10 @@ def is_greeting(text: str) -> bool:
 
 
 def safe_route_intent(user_text: str, has_report: bool = False) -> str:
+    # Common greetings do not need an embedding model or external network call.
+    if is_greeting(user_text):
+        return "general_chat"
+
     # Lớp 1: Semantic routing
     try:
         scores = {}
