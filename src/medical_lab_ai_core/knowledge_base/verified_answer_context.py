@@ -8,7 +8,12 @@ from typing import Any, Optional
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
 CONTEXT_PATH = ROOT_DIR / "clinical_demo_20_answer_context_verified.jsonl"
-CBC_CASE_IDS = {f"{index}.jpg" for index in range(1, 11)}
+VERIFIED_CASE_IDS = {
+    *(f"{index}.jpg" for index in range(1, 11)),
+    "91.jpg",
+    "92.jpg",
+    "93.jpg",
+}
 
 
 @lru_cache(maxsize=1)
@@ -22,7 +27,7 @@ def load_verified_contexts() -> dict[str, dict[str, Any]]:
                 continue
             row = json.loads(line)
             case_id = str(row.get("case_id") or "").strip()
-            if case_id not in CBC_CASE_IDS:
+            if case_id not in VERIFIED_CASE_IDS:
                 continue
             if not row.get("finding_priorities") or not row.get("atomic_claims"):
                 continue
@@ -106,6 +111,8 @@ def get_verified_runtime_context(case_id: Optional[str]) -> Optional[dict[str, A
     if not row:
         return None
 
+    panel = "CBC" if row.get("case_id") in {f"{index}.jpg" for index in range(1, 11)} else "BIOCHEMISTRY"
+
     priorities = [dict(item) for item in row.get("finding_priorities", []) or []]
     if row.get("case_id") == "7.jpg":
         _case7_priority_correction(priorities)
@@ -132,7 +139,7 @@ def get_verified_runtime_context(case_id: Optional[str]) -> Optional[dict[str, A
             "summary_vi": evidence.get("summary_vi", ""),
             "tests": related_tests,
             "conditions": [],
-            "panel": "CBC",
+            "panel": panel,
             "type": evidence.get("evidence_role") or "interpretation",
             "score": 5.0,
             "trust": 1.0,
@@ -190,7 +197,7 @@ def get_verified_runtime_context(case_id: Optional[str]) -> Optional[dict[str, A
         {
             "pattern_id": cluster.get("cluster_id"),
             "pattern_name": cluster.get("title_vi"),
-            "panel": "CBC",
+            "panel": panel,
             "conditions": [],
             "description": cluster.get("plain_explanation_vi", ""),
             "confidence": 0.9,
