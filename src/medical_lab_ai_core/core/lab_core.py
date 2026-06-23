@@ -1911,22 +1911,40 @@ def build_source_intro(evidence: list[dict]) -> str:
 
 
 def build_user_visible_answer(answer: str, ctx: dict, evidence: list[dict]) -> str:
-    cited_numbers = {int(number) for number in re.findall(r"\[(\d+)\]", str(answer or ""))}
-    if cited_numbers:
-        cited_evidence = [
-            item for index, item in enumerate(evidence, start=1)
-            if index in cited_numbers
-        ]
+    raw_answer = str(answer or "")
+    # Normalize grouped model citations such as [5, 6] so they participate in
+    # the same validation and compact renumbering as individual citations.
+    raw_answer = re.sub(
+        r"\[((?:\d+\s*,\s*)+\d+)\]",
+        lambda match: ", ".join(
+            f"[{number}]" for number in re.findall(r"\d+", match.group(1))
+        ),
+        raw_answer,
+    )
+    # The model cites positions in the full retrieval list, for example [1]
+    # and [5]. The UI only shows sources actually used, so compact them in
+    # first-appearance order to [1], [2] and keep answer/reference mapping.
+    citation_order: list[int] = []
+    for match in re.finditer(r"\[(\d+)\]", raw_answer):
+        number = int(match.group(1))
+        if 1 <= number <= len(evidence) and number not in citation_order:
+            citation_order.append(number)
+
+    if citation_order:
+        citation_map = {old: new for new, old in enumerate(citation_order, start=1)}
+
+        def replace_citation(match: re.Match) -> str:
+            old_number = int(match.group(1))
+            new_number = citation_map.get(old_number)
+            return f"[{new_number}]" if new_number is not None else ""
+
+        raw_answer = re.sub(r"\[(\d+)\]", replace_citation, raw_answer)
+        cited_evidence = [evidence[number - 1] for number in citation_order]
     else:
         cited_evidence = evidence[:3]
 
-    cleaned_answer = mechanical_cleanup_answer(answer)
-    # Preserve the original evidence order so [n] in the answer always maps
-    # to the same [n] in the reference block.
-    references = build_references_block(
-        evidence,
-        cited_numbers if cited_numbers else set(range(1, min(len(evidence), 3) + 1)),
-    )
+    cleaned_answer = mechanical_cleanup_answer(raw_answer)
+    references = build_references_block(cited_evidence)
     source_intro = build_source_intro(cited_evidence)
     return f"{cleaned_answer}\n\n{references}\n\n{source_intro}".strip()
 
@@ -2245,9 +2263,18 @@ Nhiệm vụ:
 - Chỉ dùng EVIDENCE từ sách PDF để đặt citation [1], [2], [3].
 - Không dùng static pattern/rule làm citation nếu static pattern/rule không nằm trong EVIDENCE.
 - Không bịa xét nghiệm không có trong ABNORMAL FINDINGS.
+- Khi nhắc lại giá trị xét nghiệm, phải giữ nguyên chính xác giá trị và đơn vị trong
+  ABNORMAL FINDINGS; không được đổi g/dL thành g/L hoặc tự quy đổi đơn vị.
 - Dùng NORMAL COMPANION FINDINGS để phân biệt thay đổi tương đối và tuyệt đối.
 - Nếu VERIFIED CURATED OUTLINE có nội dung, phải tuân thủ các mục
   supported_interpretations, unsupported_interpretations và companion_normal_findings.
+- Nếu VERIFIED CURATED OUTLINE có `context_source=verified_cbc_answer_context_v1`, chỉ dùng
+  `atomic_claims` để nêu nguyên nhân/bối cảnh y khoa. Dùng `citation_numbers` của từng claim
+  làm citation tương ứng; không tự tạo thêm nguyên nhân ngoài atomic claims.
+- Với context CBC verified, phải nhắc mọi bất thường trong ABNORMAL FINDINGS. Bất thường không có
+  atomic claim chỉ được mô tả giá trị và mức lệch, không gán nguyên nhân.
+- Riêng case 7: NEUT# thấp là thay đổi tuyệt đối độc lập, không được gọi là hệ quả đơn thuần của
+  lymphocytosis; EOS# tăng nhẹ phải được nhắc, nhưng không gán nguyên nhân nếu atomic claims chưa hỗ trợ.
 - Nếu runtime_guardrails.etiology_supported_by_current_evidence = false, tuyệt đối không
   nêu nhiễm trùng, viêm, stress, thuốc hoặc nguyên nhân bệnh lý như một diễn giải của pattern.
   Chỉ được nói chưa đủ dữ liệu xác định nguyên nhân và liệt kê chúng dưới dạng thông tin cần hỏi thêm.

@@ -342,22 +342,36 @@ def analyze_indicators_with_llm(
     ctx = lab_core.augment_reasoning_context_with_static_patterns(ctx, cbc_demo, biochem_patt)
 
     demo_context = None
-    if demo_case_id:
-        try:
-            from medical_lab_ai_core.knowledge_base.clinical_demo_context import get_runtime_context
+    resolved_demo_case_id = demo_case_id
+    try:
+        from medical_lab_ai_core.knowledge_base.verified_answer_context import (
+            get_verified_runtime_context,
+            match_verified_case_id,
+        )
+        from medical_lab_ai_core.knowledge_base.clinical_demo_context import get_runtime_context
 
-            demo_context = get_runtime_context(demo_case_id)
-            if demo_context:
-                ctx["case_id"] = demo_case_id
-                ctx["detected_patterns"] = demo_context["patterns"]
-                ctx["conditions"] = demo_context["conditions"]
-                ctx["curated_answer_outline"] = demo_context["answer_outline"]
-                logger.info(
-                    "Using verified clinical graph context %s for demo case %s.",
-                    demo_context["schema_version"], demo_case_id,
-                )
-        except Exception as exc:
-            logger.warning("Clinical demo context loading failed: %s", exc)
+        # A real image upload has no demo_case_id. Match its confirmed OCR
+        # test/value pairs so the same report receives the same verified
+        # interpretation as selecting that report from the demo list.
+        if not resolved_demo_case_id:
+            resolved_demo_case_id = match_verified_case_id(user_indicators)
+
+        if resolved_demo_case_id:
+            demo_context = (
+                get_verified_runtime_context(resolved_demo_case_id)
+                or get_runtime_context(resolved_demo_case_id)
+            )
+        if demo_context:
+            ctx["case_id"] = resolved_demo_case_id
+            ctx["detected_patterns"] = demo_context["patterns"]
+            ctx["conditions"] = demo_context["conditions"]
+            ctx["curated_answer_outline"] = demo_context["answer_outline"]
+            logger.info(
+                "Using verified clinical graph context %s for matched case %s.",
+                demo_context["schema_version"], resolved_demo_case_id,
+            )
+    except Exception as exc:
+        logger.warning("Clinical demo context loading failed: %s", exc)
 
     abnormal_tests = ctx.get("abnormal_tests", [])
     conditions = ctx.get("conditions", [])
@@ -367,7 +381,14 @@ def analyze_indicators_with_llm(
 
     # 2. Truy xuất kiến thức. Demo V3 ưu tiên evidence exact-match PDF,
     # sau đó bổ sung evidence từ gói sách QA100 nếu liên quan trực tiếp.
-    if demo_context:
+    if demo_context and demo_context.get("context_kind") == "verified_answer_context":
+        final_evidence = demo_context["evidence"][:config.MAX_FINAL_EVIDENCE]
+        logger.info(
+            "Verified CBC answer context returned %s evidence items for %s.",
+            len(final_evidence),
+            resolved_demo_case_id,
+        )
+    elif demo_context:
         from medical_lab_ai_core.knowledge_base.curated_evidence import retrieve_for_report_context
 
         supplemental_evidence = retrieve_for_report_context(

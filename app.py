@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -94,6 +95,13 @@ def save_translation_cache(cache: dict[str, str]) -> None:
         encoding="utf-8",
     )
     temp_path.replace(TRANSLATION_CACHE_PATH)
+
+
+def sanitize_vietnamese_translation(text: str) -> str:
+    """Remove accidental CJK/Kana glyphs occasionally emitted by an LLM translator."""
+    cleaned = re.sub(r"[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", "", str(text or ""))
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    return " ".join(cleaned.split()).strip()
 
 
 @app.get("/", include_in_schema=False)
@@ -221,7 +229,13 @@ def translate_evidence(data: EvidenceTranslationRequest) -> dict[str, Any]:
     with _translation_cache_lock:
         cached = load_translation_cache().get(cache_key)
     if cached:
-        return {"status": "success", "translation": cached, "cached": True}
+        cleaned_cached = sanitize_vietnamese_translation(cached)
+        if cleaned_cached != cached:
+            with _translation_cache_lock:
+                cache = load_translation_cache()
+                cache[cache_key] = cleaned_cached
+                save_translation_cache(cache)
+        return {"status": "success", "translation": cleaned_cached, "cached": True}
 
     try:
         from medical_lab_ai_core.graph_rag.service import call_llm
@@ -231,12 +245,13 @@ Dịch nguyên văn y khoa sau từ tiếng Anh sang tiếng Việt.
 Yêu cầu:
 - Dịch trung thành, không thêm, bớt hoặc diễn giải.
 - Giữ nguyên số liệu, đơn vị, tên viết tắt và thuật ngữ xét nghiệm cần thiết.
+- Tuyệt đối không chèn chữ Trung Quốc, chữ Nhật hoặc ngôn ngữ khác.
 - Chỉ trả về bản dịch tiếng Việt, không mở đầu, không ghi chú.
 
 Nguyên văn:
 {source_text}
 """.strip()
-        translation = " ".join(call_llm(prompt).split()).strip()
+        translation = sanitize_vietnamese_translation(call_llm(prompt))
         if not translation:
             raise RuntimeError("Mô hình trả về bản dịch trống.")
 
