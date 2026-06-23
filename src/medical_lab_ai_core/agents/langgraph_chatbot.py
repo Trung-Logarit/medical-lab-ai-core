@@ -171,6 +171,89 @@ def build_clean_answer(raw: str, evidence: List[Dict[str, Any]]) -> str:
         return raw
 
 
+DIFFERENTIAL_LABELS = {
+    "NEUT": "bạch cầu trung tính",
+    "LYM": "bạch cầu lympho",
+    "MONO": "bạch cầu mono",
+    "EOS": "bạch cầu ái toan",
+    "BASO": "bạch cầu ái kiềm",
+}
+
+
+def _find_report_indicator(report_data: List[Dict[str, Any]], names: set[str]) -> Optional[Dict[str, Any]]:
+    for item in report_data:
+        test_name = str(item.get("test_name") or "").upper().replace("_PERCENT", "%").replace("_ABS", "#")
+        if test_name in names:
+            return item
+    return None
+
+
+def _indicator_summary(item: Optional[Dict[str, Any]], display_name: str) -> str:
+    if not item:
+        return ""
+    status_vi = {"high": "cao", "low": "thấp", "normal": "bình thường"}.get(
+        str(item.get("status") or "").lower(), ""
+    )
+    value = item.get("value")
+    unit = item.get("unit") or ""
+    suffix = f", {status_vi}" if status_vi else ""
+    return f"{display_name} = {value} {unit}{suffix}".strip()
+
+
+def answer_common_lab_notation_question(
+    user_text: str,
+    report_data: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[str]:
+    """Answer basic CBC notation deterministically instead of using noisy RAG."""
+    text_upper = str(user_text or "").upper()
+    asks_notation = any(token in str(user_text or "").lower() for token in (
+        "là gì", "khác gì", "khác nhau", "viết tắt", "nghĩa là", "#", "%",
+    ))
+    if not asks_notation:
+        return None
+
+    code = next((item for item in DIFFERENTIAL_LABELS if re.search(rf"\b{item}\b", text_upper)), None)
+    if not code:
+        return None
+
+    label = DIFFERENTIAL_LABELS[code]
+    report_data = report_data or []
+    percent_item = _find_report_indicator(report_data, {f"{code}%", f"{code}_PERCENT"})
+    absolute_item = _find_report_indicator(report_data, {f"{code}#", f"{code}_ABS"})
+
+    lines = [
+        f"**{code} là gì?**",
+        f"{code} là mã viết tắt của {label}, một nhóm tế bào bạch cầu trong máu.",
+        "",
+        "**Dấu % và # khác nhau như thế nào?**",
+        f"- **{code}%**: tỷ lệ {label} trong tổng số bạch cầu.",
+        f"- **{code}#**: số lượng tuyệt đối của {label} trong một thể tích máu, thường ghi bằng G/L hoặc 10^9/L.",
+        "- Khi hai chỉ số không cùng chiều, trị số **#** thường quan trọng hơn để xác định có tăng/giảm thật hay chỉ thay đổi tỷ lệ.",
+    ]
+
+    report_values = [
+        value for value in (
+            _indicator_summary(percent_item, f"{code}%"),
+            _indicator_summary(absolute_item, f"{code}#"),
+        ) if value
+    ]
+    if report_values:
+        lines.extend(["", "**Trong phiếu hiện tại:**", "- " + "; ".join(report_values) + "."])
+        percent_status = str((percent_item or {}).get("status") or "").lower()
+        absolute_status = str((absolute_item or {}).get("status") or "").lower()
+        if absolute_status in {"high", "low"}:
+            direction = "tăng" if absolute_status == "high" else "giảm"
+            lines.append(
+                f"- Vì {code}# cũng {direction}, đây không chỉ là thay đổi tỷ lệ; "
+                f"số lượng {label} tuyệt đối cũng đang {direction}."
+            )
+        elif percent_status in {"high", "low"} and absolute_status == "normal":
+            lines.append(
+                f"- {code}% thay đổi nhưng {code}# bình thường, nên đây chủ yếu là thay đổi tỷ lệ tương đối."
+            )
+    return "\n".join(lines)
+
+
 # =========================================================
 # NODE 1 — input_node: nạp session vào state
 # =========================================================
@@ -300,6 +383,9 @@ def _infer_panels(text: str) -> List[str]:
 def medical_knowledge_node(state: ChatState) -> ChatState:
     """Tác nhân y khoa — trả lời câu hỏi kiến thức có bằng chứng từ KB."""
     user_text = state["user_text"]
+    direct_answer = answer_common_lab_notation_question(user_text, state.get("active_report_data"))
+    if direct_answer:
+        return {**state, "answer": direct_answer}
     ctx = _build_knowledge_ctx(user_text)
 
     # Ưu tiên demo evidence local
@@ -366,6 +452,52 @@ def report_followup_node(state: ChatState) -> ChatState:
     user_text = state["user_text"]
     report_data = state["active_report_data"] or []
     report_summary = state["report_summary"] or ""
+    direct_answer = answer_common_lab_notation_question(user_text, report_data)
+    if direct_answer:
+        return {**state, "answer": direct_answer}
+
+    # Demo CBC: keep follow-up answers on the same verified claims/evidence as
+    # the initial analysis. Neo4j/vector retrieval remains the fallback.
+    verified_context = None
+    try:
+        from medical_lab_ai_core.knowledge_base.verified_answer_context import (
+            match_verified_runtime_context,
+        )
+        verified_context = match_verified_runtime_context(report_data)
+    except Exception as exc:
+        logger.debug("Verified follow-up context matching failed: %s", exc)
+
+    if verified_context:
+        evidence = (verified_context.get("evidence") or [])[:6]
+        outline = verified_context.get("answer_outline") or {}
+        ev_block = format_evidence_block(evidence)
+        prompt = f"""Bạn là trợ lý y khoa hỗ trợ giải thích phiếu xét nghiệm máu bằng tiếng Việt.
+
+Người dùng hỏi tiếp:
+{user_text}
+
+Dữ liệu phiếu:
+{json.dumps(report_data, ensure_ascii=False)}
+
+Nội dung y khoa đã kiểm chứng cho phiếu này:
+{json.dumps(outline, ensure_ascii=False)}
+
+Bằng chứng đã kiểm chứng:
+{ev_block}
+
+Yêu cầu:
+- Trả lời đúng câu hỏi, ngắn gọn, dễ hiểu và dùng số liệu của phiếu khi hữu ích.
+- Chỉ nêu nguyên nhân y khoa có trong atomic_claims; tuân thủ conditions_vi và forbidden_claims_vi.
+- Chỉ đề xuất xét nghiệm hoặc hành động có trong recommended_actions_vi hoặc conditions_vi;
+  không tự thêm xét nghiệm huyết thanh, CRP, thuốc hay thủ thuật từ kiến thức chung.
+- Dùng citation_numbers trong atomic_claims. Không gắn citation không hỗ trợ claim.
+- Nếu một claim có nhiều citation_numbers, phải giữ đủ các citation đó; hệ thống sẽ tự đánh lại
+  số liên tục trong câu trả lời và danh sách tài liệu.
+- Không chẩn đoán chắc chắn, không kê thuốc.
+- Không nhắc tới JSON, context, evidence ID hay quy tắc nội bộ."""
+        raw = rag_service.call_llm(prompt)
+        answer = build_clean_answer(raw, evidence)
+        return {**state, "answer": answer}
 
     # Xây dựng ctx từ dữ liệu phiếu
     ctx = _build_knowledge_ctx(user_text)

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Trợ lý Xét nghiệm</title>
+    <title>Trợ lý xét nghiệm y khoa</title>
     <style>
         :root {
             --primary-blue: #0056b3;
@@ -157,6 +157,19 @@
         .typing-indicator { display: inline-block; font-style: italic; color: #555; }
         .typing-indicator::after { content: '...'; animation: dots 1.5s steps(5, end) infinite; }
         @keyframes dots { 0%, 20% { color: rgba(0,0,0,0); text-shadow: .25em 0 0 rgba(0,0,0,0), .5em 0 0 rgba(0,0,0,0);} 40% { color: #333; text-shadow: .25em 0 0 rgba(0,0,0,0), .5em 0 0 rgba(0,0,0,0);} 60% { text-shadow: .25em 0 0 #333, .5em 0 0 rgba(0,0,0,0);} 80%, 100% { text-shadow: .25em 0 0 #333, .5em 0 0 #333;}}
+        .work-progress { min-width: 310px; max-width: 540px; padding: 2px 0; }
+        .work-progress-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 9px; }
+        .work-progress-title { font-weight: 700; color: #174d7c; }
+        .work-progress-time { color: #667788; font-size: 12px; white-space: nowrap; }
+        .work-progress-bar { height: 3px; overflow: hidden; border-radius: 4px; background: #cfe0ef; margin-bottom: 10px; }
+        .work-progress-bar::after { content: ''; display: block; height: 100%; width: 38%; background: linear-gradient(90deg, transparent, #0877cf, transparent); animation: progress-slide 1.35s ease-in-out infinite; }
+        @keyframes progress-slide { from { transform: translateX(-110%); } to { transform: translateX(290%); } }
+        .work-step { display: flex; align-items: center; gap: 8px; min-height: 25px; color: #7b8793; font-size: 13px; }
+        .work-step.done { color: #27864a; }
+        .work-step.active { color: #173b5d; font-weight: 650; }
+        .work-step-icon { width: 17px; text-align: center; }
+        .work-step.active .work-step-icon { width: 13px; height: 13px; margin: 0 2px; border: 2px solid #a9ccea; border-top-color: #0877cf; border-radius: 50%; animation: work-spin .8s linear infinite; font-size: 0; }
+        @keyframes work-spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
@@ -169,10 +182,10 @@
     <div class="app-container">
         <!-- BÊN TRÁI: GIAO DIỆN CHATBOT -->
         <div class="chat-section">
-            <div class="chat-header">📋 Trợ lý Xét nghiệm máu</div>
+            <div class="chat-header">📋 Trợ lý xét nghiệm y khoa</div>
             <div class="chat-history" id="chatHistory">
                 <div class="message ai-message">
-                    <div>Xin chào! Tôi là Trợ lý phân tích xét nghiệm máu. Bạn có thể tải ảnh phiếu xét nghiệm máu (Huyết học/Sinh hóa) ở cột bên phải để tôi hỗ trợ đọc chỉ số, hoặc đặt câu hỏi trực tiếp cho tôi ở ô bên dưới nhé.</div>
+                    <div>Xin chào! Tôi là Trợ lý phân tích xét nghiệm y khoa. Bạn có thể tải ảnh phiếu xét nghiệm (Huyết học/Sinh hóa) ở cột bên phải để tôi hỗ trợ đọc chỉ số, hoặc đặt câu hỏi trực tiếp cho tôi ở ô bên dưới nhé.</div>
                 </div>
             </div>
             
@@ -244,7 +257,7 @@
         const UNIT_ONTOLOGY = {
             "RBC": ["10^12/L", "T/L"],
             "WBC": ["10^9/L", "G/L", "10^3/uL"],
-            "HGB": ["g/L"],
+            "HGB": ["g/L", "g/dL"],
             "HCT": ["%", "L/L"],
             "MCV": ["fL"],
             "MCH": ["pg"],
@@ -354,6 +367,53 @@
             return msgDiv;
         }
 
+        function createWorkProgress(title, steps) {
+            const stepHtml = steps.map((step, index) => `
+                <div class="work-step ${index === 0 ? 'active' : ''}" data-step="${index}">
+                    <span class="work-step-icon">${index === 0 ? '' : '○'}</span>
+                    <span>${escapeHtml(step.label)}</span>
+                </div>`).join('');
+            const message = addChatMessage('ai', `
+                <div class="work-progress" role="status" aria-live="polite">
+                    <div class="work-progress-header">
+                        <span class="work-progress-title">${escapeHtml(title)}</span>
+                        <span class="work-progress-time">0 giây</span>
+                    </div>
+                    <div class="work-progress-bar"></div>
+                    <div class="work-progress-steps">${stepHtml}</div>
+                </div>`, true);
+            const startedAt = Date.now();
+            let currentStep = 0;
+
+            const render = () => {
+                const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+                const timeNode = message.querySelector('.work-progress-time');
+                if (timeNode) timeNode.textContent = `Đã chờ ${elapsed} giây`;
+                for (let index = steps.length - 1; index >= 0; index--) {
+                    if (elapsed >= steps[index].after) {
+                        currentStep = index;
+                        break;
+                    }
+                }
+                message.querySelectorAll('.work-step').forEach((node, index) => {
+                    node.classList.toggle('done', index < currentStep);
+                    node.classList.toggle('active', index === currentStep);
+                    const icon = node.querySelector('.work-step-icon');
+                    if (icon) icon.textContent = index < currentStep ? '✓' : (index === currentStep ? '' : '○');
+                });
+                const history = document.getElementById('chatHistory');
+                history.scrollTop = history.scrollHeight;
+            };
+            const timer = setInterval(render, 1000);
+            render();
+            return {
+                stop() {
+                    clearInterval(timer);
+                    message.remove();
+                }
+            };
+        }
+
         function escapeHtml(value) {
             return String(value ?? '')
                 .replace(/&/g, '&amp;')
@@ -444,7 +504,12 @@
 
             inputField.value = '';
             addChatMessage('user', text);
-            const typingMsg = addChatMessage('ai', "<span class='typing-indicator'>Đang suy nghĩ</span>", true);
+            const progress = createWorkProgress('Trợ lý đang chuẩn bị câu trả lời', [
+                { after: 0, label: 'Đang hiểu câu hỏi của bạn' },
+                { after: 2, label: 'Đang đối chiếu với phiếu xét nghiệm' },
+                { after: 5, label: 'Đang kiểm tra bằng chứng liên quan' },
+                { after: 8, label: 'Đang hoàn thiện câu trả lời' }
+            ]);
 
             try {
                 const response = await fetch(`${CHAT_API_BASE}/chat`, {
@@ -457,7 +522,7 @@
                 });
 
                 const data = await response.json();
-                typingMsg.remove();
+                progress.stop();
 
                 if (data.status === "success") {
                     addChatMessage('ai', data.answer, false);
@@ -465,7 +530,7 @@
                     addChatMessage('ai', "❌ Lỗi: " + data.message);
                 }
             } catch (error) {
-                typingMsg.remove();
+                progress.stop();
                 addChatMessage('ai', "❌ Lỗi mất kết nối tới Chatbot Service.");
             }
         }
@@ -500,10 +565,15 @@
             fileInput.disabled = true;
             uploadBox.style.pointerEvents = 'none';
             uploadBox.style.opacity = '0.7';
-            btnUpload.innerText = "Đang trích xuất chỉ số...";
+            btnUpload.innerText = "OCR đang xử lý ảnh...";
 
             addChatMessage('user', "Tôi muốn trích xuất chỉ số từ file ảnh này.");
-            const typingMsg = addChatMessage('ai', "<span class='typing-indicator'>Đang trích xuất chỉ số</span>", true);
+            const progress = createWorkProgress('Đang đọc phiếu xét nghiệm', [
+                { after: 0, label: 'Đang tiếp nhận và kiểm tra ảnh' },
+                { after: 3, label: 'Đang nhận diện vùng chứa thông tin' },
+                { after: 10, label: 'Mô hình OCR đang đọc chữ và số liệu' },
+                { after: 25, label: 'Đang chuẩn hóa bảng chỉ số' }
+            ]);
 
             const formData = new FormData();
             formData.append("file", fileInput.files[0]);
@@ -514,7 +584,7 @@
                     body: formData
                 });
                 const data = await response.json();
-                typingMsg.remove();
+                progress.stop();
 
                 btnUpload.disabled = false;
                 fileInput.disabled = false;
@@ -538,7 +608,7 @@
                     addChatMessage('ai', "❌ Lỗi trích xuất chỉ số: " + data.message);
                 }
             } catch (error) {
-                typingMsg.remove();
+                progress.stop();
                 btnUpload.disabled = false;
                 fileInput.disabled = false;
                 uploadBox.style.pointerEvents = 'auto';
@@ -784,10 +854,15 @@
 
             document.getElementById('btn-confirm').classList.add('hidden');
             btnReload.disabled = true;
-            btnReload.innerText = "Đang phân tích...";
+            btnReload.innerText = "AI đang phân tích...";
 
             addChatMessage('user', "Đây là dữ liệu đã xác nhận. Hãy phân tích giúp tôi.");
-            const typingMsg = addChatMessage('ai', "<span class='typing-indicator'>Đang phân tích y khoa</span>", true);
+            const progress = createWorkProgress('Đang phân tích kết quả xét nghiệm', [
+                { after: 0, label: 'Đang kiểm tra các chỉ số bất thường' },
+                { after: 2, label: 'Đang nhận diện các cụm kết quả liên quan' },
+                { after: 5, label: 'Đang đối chiếu tài liệu y khoa' },
+                { after: 9, label: 'Đang soạn diễn giải dễ hiểu' }
+            ]);
 
             try {
                 const response = await fetch(`${CHAT_API_BASE}/analyze`, {
@@ -801,7 +876,7 @@
                 });
 
                 const data = await response.json();
-                typingMsg.remove();
+                progress.stop();
                 btnReload.disabled = false;
                 btnReload.innerText = "Tải phiếu khác";
 
@@ -814,7 +889,7 @@
                     addChatMessage('ai', "❌ Lỗi phân tích: " + data.message);
                 }
             } catch (error) {
-                typingMsg.remove();
+                progress.stop();
                 btnReload.disabled = false;
                 btnReload.innerText = "Tải phiếu khác";
                 isSubmitted = false;
