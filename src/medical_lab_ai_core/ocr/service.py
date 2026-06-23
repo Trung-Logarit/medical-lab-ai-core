@@ -5,9 +5,8 @@ import unicodedata
 import difflib
 import logging
 import math
-import os
-import threading
 import time
+import threading
 from pathlib import Path
 
 import cv2
@@ -42,6 +41,8 @@ OUTPUT_CLEAN_JSON = "4_extracted_data_clean.json"
 
 USE_ONTOLOGY_FILTER = True 
 
+CUSTOM_REC_MODEL_DIR = str(PACKAGE_ROOT / "models" / "vi_PP-OCRv5_mobile_rec_latest")
+
 COLUMN_KEYWORDS = {
     "TEST_NAME": [
         "ten xet nghiem", "test name", "parameter", "investigation", "investigations", "ten chi so", "test"
@@ -51,10 +52,11 @@ COLUMN_KEYWORDS = {
     ],
     "REF_RANGE": [
         "tri so", "binh thuong", "tri so binh thuong", "chi so binh thuong", "normal range", "reference range", "tham chieu",
-        "ref range", "ref", "csbt", "tsbt", "khoang tham chieu", "biological ref", "biological ref. interval", "biological reference"
+        "ref range", "ref", "csbt", "tsbt", "khoang tham chieu", "biological ref", "biological ref. interval", "biological reference",
+        "tham chiu", "gia tri tham chiu" ,"gia tri binh thung", "k tham chiu", "k tham chin"
     ],
     "UNIT": [
-        "don vi", "unit", "units"
+        "don vi", "unit", "units", "don vj"
     ],
     "IGNORE_WALL": [
         "phuong phap", "thiet bi", "ma qt", "kt do", "phuong phap/kt", "method", "methods", "may xn"
@@ -62,19 +64,34 @@ COLUMN_KEYWORDS = {
 }
 
 # =========================================================
-# UNIFIED OCR ENGINE INIT
+# UNIFIED OCR ENGINE INIT (Tích hợp Unwarp & Det/Rec)
 # =========================================================
 
 logger = logging.getLogger(__name__)
+
+# --- FIX: Tự động tạo file inference.yml bắt buộc cho backend PaddleX (PP-OCRv5) ---
+def ensure_paddlex_yml(model_dir):
+    dir_path = Path(model_dir)
+    if dir_path.exists() and dir_path.is_dir():
+        yml_path = dir_path / "inference.yml"
+        if not yml_path.exists():
+            logger.warning(f"[*] CẢNH BÁO: Không tìm thấy 'inference.yml' trong {model_dir}. Đang tự tạo file cấu hình giả lập để PaddleX khởi động...")
+            with open(yml_path, "w", encoding="utf-8") as f:
+                f.write("Global:\n  model_name: PP-OCRv5_mobile_rec\n")
+
+if CUSTOM_REC_MODEL_DIR:
+    ensure_paddlex_yml(CUSTOM_REC_MODEL_DIR)
+# ----------------------------------------------------------------------------------
+
 ocr_engine = None
 ocr_cpu = None
 _ocr_init_lock = threading.Lock()
-
 
 def get_ocr_engine():
     global ocr_engine
     if PaddleOCR is None or paddle is None:
         raise RuntimeError("paddleocr and paddlepaddle are required for OCR inference.")
+    
     if ocr_engine is not None:
         return ocr_engine
 
@@ -82,27 +99,16 @@ def get_ocr_engine():
         if ocr_engine is not None:
             return ocr_engine
 
-        profile = os.getenv("OCR_MODEL_PROFILE", "mobile").strip().lower()
-        detection_model = (
-            "PP-OCRv5_server_det" if profile == "server" else "PP-OCRv5_mobile_det"
-        )
-        device = os.getenv("OCR_DEVICE", "auto").strip().lower()
-        if device == "auto":
-            device = "gpu" if paddle.device.is_compiled_with_cuda() else "cpu"
-
-        logger.info(
-            "Initializing PaddleOCR profile=%s detection=%s device=%s.",
-            profile, detection_model, device,
-        )
+        print("Khởi tạo Unified PaddleOCR (Unwarp + Detection + Recognition)...")
         ocr_engine = PaddleOCR(
-            device=device,
+            device="gpu" if paddle.device.is_compiled_with_cuda() else "cpu",
             lang="vi",
-            text_detection_model_name=detection_model,
             use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
+            use_doc_unwarping=True,
             use_textline_orientation=False,
             ocr_version="PP-OCRv5",
-            enable_mkldnn=False,
+            text_recognition_model_name="PP-OCRv5_mobile_rec",
+            text_recognition_model_dir=CUSTOM_REC_MODEL_DIR
         )
     return ocr_engine
 
@@ -176,13 +182,36 @@ def pil_to_bgr(img):
 def extract_single_unwarped_panel(img):
     if img is None or not isinstance(img, np.ndarray): return img
     h, w = img.shape[:2]
-    if w < h * 1.8: return img
+    if w < h * 1.5: return img
     third = w // 3
     if third > 50:
         panels = [img[:, 0:third], img[:, third:2*third], img[:, 2*third:w]]
         widths = [p.shape[1] for p in panels]
         if min(widths) > 0 and max(widths) - min(widths) < max(20, int(0.1 * third)):
             return panels[2].copy()
+    return img
+
+# =========================================================
+# TỐI ƯU HÓA GPU (RESIZE ẢNH)
+# =========================================================
+
+def resize_image_if_needed(img, max_dimension=2560):
+    """
+    Thu nhỏ ảnh nếu quá lớn để tránh tràn VRAM GPU (OOM) khi chạy mô hình Unwarp/OCR.
+    Ngưỡng 2560px giữ được độ nét cực cao cho text mà vẫn an toàn cho GPU.
+    """
+    if img is None:
+        return None
+    h, w = img.shape[:2]
+    longest_edge = max(h, w)
+    
+    if longest_edge > max_dimension:
+        scale = max_dimension / longest_edge
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        print(f"   [Tối ưu GPU] Đã thu nhỏ ảnh từ {w}x{h} xuống {new_w}x{new_h} để tránh OOM.")
+        return resized
     return img
 
 # =========================================================
@@ -217,7 +246,26 @@ def fix_unit_typos(u):
     u = re.sub(r'10\^?3/?uL', '10^3/uL', u, flags=re.IGNORECASE)
     
     if u.lower() in ['i1', 'f1', 'fl']: return "fL"
-    return u.strip()
+    
+    u = u.strip()
+    
+    # Ép kiểu cắt chuỗi rác: Tìm đơn vị chuẩn ẩn bên trong đống chữ (VD: "G/L Đo quang" -> "G/L")
+    standard_units = sorted([
+        "10^12/L", "10^9/L", "10^3/uL", "mmol/L", "umol/L", "µmol/L", "pmol/L", "nmol/L",
+        "g/dL", "g/L", "mg/dL", "mg/L", "ug/dL", "ug/L", "µg/L", "ng/dL", "ng/L",
+        "U/L", "U/l", "IU/L", "mEq/L", "mOsm/L", "mmHg", "mbar", "pg/mL", "ng/mL", "pmol/l",
+        "fL", "pg", "T/L", "G/L", "M/uL", "K/uL",
+        "uIU/mL", "µIU/mL", "uIU/ml", "%"
+    ], key=len, reverse=True)
+    
+    u_lower = u.lower()
+    for su in standard_units:
+        if su.lower() in u_lower:
+            return su
+            
+    # Nếu vẫn không tìm thấy, cố gắng cắt các từ rác phổ biến
+    u = re.sub(r'(?i)(đo quang|tr kháng|phương pháp|máy xn|do).*', '', u).strip()
+    return u
 
 def load_unit_ontology(json_path):
     try:
@@ -242,10 +290,20 @@ def unit_similarity(u1, u2):
 def correct_unit_by_ontology(raw_unit, test_name, unit_ontology):
     allowed_units = unit_ontology.get(test_name, [])
     if not allowed_units: return raw_unit
+    
     clean_raw = str(raw_unit).strip().lower()
+    
+    # 1. Ưu tiên khớp chính xác 100%
     for au in allowed_units:
         if clean_raw == str(au).strip().lower():
             return au
+            
+    # 2. Khớp chuỗi con (Substring Match)
+    for au in sorted(allowed_units, key=len, reverse=True):
+        if str(au).strip().lower() in clean_raw or clean_raw in str(au).strip().lower():
+            return au
+            
+    # 3. Fallback: Nếu hoàn toàn lạc quẻ, ép về đơn vị chuẩn đầu tiên trong từ điển
     return allowed_units[0]
 
 # =========================================================
@@ -326,7 +384,8 @@ def predict_unified(image_or_path):
     input_data = str(image_or_path) if isinstance(image_or_path, (str, Path)) else image_or_path
     
     try:
-        results = get_ocr_engine().predict(input_data)
+        engine = get_ocr_engine()
+        results = engine.predict(input_data)
     except Exception as e:
         if is_gpu_oom_error(e):
             print("   Cảnh báo: GPU OOM, tự động chuyển sang CPU...")
@@ -337,10 +396,11 @@ def predict_unified(image_or_path):
                     device="cpu",
                     lang="vi",
                     use_doc_orientation_classify=False,
-                    use_doc_unwarping=False,
+                    use_doc_unwarping=True,
                     use_textline_orientation=False,
                     ocr_version="PP-OCRv5",
-                    enable_mkldnn=False
+                    text_recognition_model_name="PP-OCRv5_mobile_rec",
+                    text_recognition_model_dir=CUSTOM_REC_MODEL_DIR
                 )
             results = ocr_cpu.predict(input_data)
         else:
@@ -684,15 +744,30 @@ def process_single_image_core(image_path, aliases, unit_ontology, debug_img_path
         print(f"   ❌ Lỗi: Không thể đọc ảnh {image_path}")
         return {"extracted_data": [], "raw_ocr": [], "used_gpu": False, "timings": {}}
 
+    # 1. Resize ảnh để cứu GPU khỏi những bức ảnh 4K/8K
+    optimized_img = resize_image_if_needed(original_img, max_dimension=1920)
+
+    # Thêm padding (viền trắng) vào phía dưới ảnh TRƯỚC KHI chạy unwarp/OCR
+    # Điều này giúp dòng watermark "Unwarping Image (True)" của thư viện sẽ in lên phần viền trắng
+    # thay vì in đè lên các chỉ số xét nghiệm nằm sát mép cuối của tờ giấy.
+    if optimized_img is not None:
+        optimized_img = cv2.copyMakeBorder(
+            optimized_img, 
+            top=0, bottom=120, left=0, right=0, 
+            borderType=cv2.BORDER_CONSTANT, 
+            value=[255, 255, 255]
+        )
+
     t0_paddle = time.time()
-    warped_img, tokens, used_gpu = predict_unified(image_path)
+    # 2. Truyền ảnh đã tối ưu (numpy array) thay vì truyền đường dẫn file
+    warped_img, tokens, used_gpu = predict_unified(optimized_img)
     t_paddle = time.time() - t0_paddle
 
     if warped_img is None:
         print(f"   ⚠️ Lỗi trích xuất ảnh Unwarp, fallback lại ảnh gốc: {image_path}")
-        warped_img = original_img.copy()
+        warped_img = optimized_img.copy() # Lấy ảnh đã tối ưu làm fallback
     else:
-        print(f"   ✅ Paddle Unified Engine xử lý thành công: {image_path}")
+        print(f"   ✅ Paddle Unified Engine xử lý thành công.")
 
     if scanned_img_path:
         save_image(scanned_img_path, warped_img)
@@ -1005,7 +1080,14 @@ def process_single_image_core(image_path, aliases, unit_ontology, debug_img_path
                 valid_anchors.append(a)
 
             all_canons = set(canon for canon, alias in aliases)
-            while True:
+            
+            # THÊM BIẾN ĐẾM TRÁNH VÒNG LẶP VÔ HẠN (Tránh treo máy khi gỡ trùng lặp)
+            max_tie_break_loops = 10
+            tie_break_loop_count = 0
+            
+            while tie_break_loop_count < max_tie_break_loops:
+                tie_break_loop_count += 1
+                
                 canon_to_anchors = {}
                 for a in valid_anchors:
                     c = a["target_canonical"]
@@ -1165,8 +1247,20 @@ def run_end_to_end_pipeline(input_path):
 
     input_path_obj = Path(input_path)
     
+    # Mở file jsonl để ghi append liên tục
+    jsonl_output_path = Path(OUTPUT_DIR) / "all_results.jsonl"
+    
+    # Xóa file cũ nếu đã tồn tại để tránh ghi đè kết quả cũ
+    if jsonl_output_path.exists():
+        jsonl_output_path.unlink()
+        
     if input_path_obj.is_file():
         res, p_time, used_gpu, timings = run_pipeline_on_image(str(input_path_obj), aliases, unit_ontology, OUTPUT_DIR)
+        
+        # Lưu kết quả file đơn vào jsonl
+        with open(jsonl_output_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"id": input_path_obj.name, "data": res}, ensure_ascii=False) + "\n")
+            
         return res
         
     elif input_path_obj.is_dir():
@@ -1178,18 +1272,29 @@ def run_end_to_end_pipeline(input_path):
         valid_exts = [".jpg", ".jpeg", ".png", ".bmp", ".tiff"]
         image_files = [f for f in input_path_obj.iterdir() if f.is_file() and f.suffix.lower() in valid_exts]
         
+        # FIX TÌNH TRẠNG SẮP XẾP FILE LỘN XỘN (NATURAL SORT)
+        def natural_keys(path_obj):
+            return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', path_obj.name)]
+        image_files.sort(key=natural_keys)
+        
         print(f"==> Tìm thấy {len(image_files)} ảnh trong thư mục {input_path}")
-        for i, img_file in enumerate(image_files, 1):
-            print(f"\n--- Đang xử lý ảnh {i}/{len(image_files)}: {img_file.name} ---")
-            res, p_time, used_gpu, timings = run_pipeline_on_image(str(img_file), aliases, unit_ontology, OUTPUT_DIR)
-            all_results[img_file.name] = res
-            
-            if used_gpu and timings:
-                gpu_times.append(p_time)
-                paddle_times.append(timings.get("paddle_end_to_end", 0))
-                ext_times.append(timings.get("extraction", 0))
+        
+        with open(jsonl_output_path, "a", encoding="utf-8") as f_jsonl:
+            for i, img_file in enumerate(image_files, 1):
+                print(f"\n--- Đang xử lý ảnh {i}/{len(image_files)}: {img_file.name} ---")
+                res, p_time, used_gpu, timings = run_pipeline_on_image(str(img_file), aliases, unit_ontology, OUTPUT_DIR)
+                all_results[img_file.name] = res
+                
+                # Lưu từng kết quả ảnh vào jsonl ngay sau khi chạy xong
+                f_jsonl.write(json.dumps({"id": img_file.name, "data": res}, ensure_ascii=False) + "\n")
+                
+                if used_gpu and timings:
+                    gpu_times.append(p_time)
+                    paddle_times.append(timings.get("paddle_end_to_end", 0))
+                    ext_times.append(timings.get("extraction", 0))
             
         print(f"\n==> Đã xử lý xong toàn bộ {len(image_files)} ảnh trong thư mục!")
+        print(f"==> Kết quả tổng hợp (JSON Lines) đã được lưu tại: {jsonl_output_path}")
         if gpu_times:
             n = len(gpu_times)
             avg_total = sum(gpu_times) / n
@@ -1211,23 +1316,3 @@ def run_end_to_end_pipeline(input_path):
     else:
         print(f"❌ Lỗi: Không tìm thấy file hoặc thư mục {input_path}")
         return None
-
-if __name__ == "__main__":
-    import sys
-    
-    input_folder = "input"
-    if len(sys.argv) > 1:
-        input_folder = sys.argv[1]
-        
-    input_path_obj = Path(input_folder)
-    
-    if not input_path_obj.exists():
-        print(f"[*] Đã tự động tạo thư mục '{input_folder}'.")
-        print(f"[*] Vui lòng copy các ảnh cần OCR vào thư mục '{input_folder}' rồi bấm Run lại.")
-        input_path_obj.mkdir(parents=True, exist_ok=True)
-    else:
-        print(f"\n========== BẮT ĐẦU CHẠY OCR TỪ: {input_folder} ==========")
-        results = run_end_to_end_pipeline(input_folder)
-        print("========== HOÀN TẤT ==========")
-        print(f"Kiểm tra kết quả trong thư mục: '{OUTPUT_DIR}'")
-

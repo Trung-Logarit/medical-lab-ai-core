@@ -69,10 +69,6 @@
     "mean corpuscular hemoglobin concentration",
     "nong do hb trung binh hc"
   ],
-  "RDW": [
-    "rdw",
-    "red cell distribution width"
-  ],
   "RDW_SD": [
     "rdw_sd",
     "rdw sd",
@@ -83,7 +79,11 @@
     "rdw_cv",
     "rdw cv",
     "rdw-cv",
-    "red cell distribution width cv"
+    "red cell distribution width cv",
+    "rdw c",
+    "rdwc",
+    "rdw-c",
+    "rdw_c"
   ],
   "PLT": [
     "plt",
@@ -112,7 +112,7 @@
     "p lcr",
     "platelet large cell ratio"
   ],
-  "IG_PERCENT": [
+  "IG%": [
     "immature granulocyte",
     "immature granulocytes",
     "bach cau non",
@@ -123,11 +123,14 @@
     "immature granulocytes percent",
     "tỷ lệ ig"
   ],
-  "IG_ABS": [
+  "IG#": [
     "ig",
     "1g",
     "ig#",
     "1g#",
+    "igh",
+    "ig h",
+    "1g h",
     "ig #",
     "1g #",
     "so luong ig",
@@ -141,7 +144,7 @@
     "absolute immature granulocyte",
     "số lượng ig"
   ],
-  "NEUT_PERCENT": [
+  "NEUT%": [
     "neut",
     "neu",
     "neut%",
@@ -154,11 +157,13 @@
     "bc (trung tính)",
     "tỷ lệ bc trung tính (neut)"
   ],
-  "NEUT_ABS": [
+  "NEUT#": [
     "neut#",
     "neu#",
     "neut #",
     "neu #",
+    "neuh",
+    "neut h",
     "absolute neutrophil",
     "absolute neutrophils",
     "absolute neutrophil count",
@@ -170,7 +175,7 @@
     "sl cb (trung tính)",
     "số lượng bc trung tính"
   ],
-  "LYM_PERCENT": [
+  "LYM%": [
     "lym",
     "lymph",
     "lymphocyte",
@@ -180,11 +185,18 @@
     "bc lympho",
     "tỷ lệ bc lympho (lymph)"
   ],
-  "LYM_ABS": [
+  "LYM#": [
     "lym#",
     "lymph#",
     "lym #",
+    "lymp#",
+    "lymp #",
     "lymph #",
+    "lymph h",
+    "lym h",
+    "lymp h",
+    "lymph",
+    "lymh",
     "absolute lymphocyte",
     "absolute lymphocytes",
     "absolute lymphocyte count",
@@ -194,7 +206,7 @@
     "sl bc lympho",
     "số lượng bc lympho"
   ],
-  "MONO_PERCENT": [
+  "MONO%": [
     "mono",
     "monocyte",
     "monocytes",
@@ -202,9 +214,11 @@
     "bc mono",
     "tỷ lệ bc mono (mono)"
   ],
-  "MONO_ABS": [
+  "MONO#": [
     "mono#",
     "mono #",
+    "monoh",
+    "mono h",
     "absolute monocyte",
     "absolute monocytes",
     "absolute monocyte count",
@@ -214,7 +228,7 @@
     "sl bc mono",
     "số lượng bc mono"
   ],
-  "EOS_PERCENT": [
+  "EOS%": [
     "eos",
     "eosin",
     "eosinophil",
@@ -224,9 +238,11 @@
     "bc ưa axit",
     "tỷ lệ bc ái toan (eosin)"
   ],
-  "EOS_ABS": [
+  "EOS#": [
     "eos#",
     "eos #",
+    "eosh",
+    "eos h",
     "absolute eosinophil",
     "absolute eosinophils",
     "absolute eosinophil count",
@@ -236,7 +252,7 @@
     "sl bc ưa axit",
     "số lượng bc ái toan"
   ],
-  "BASO_PERCENT": [
+  "BASO%": [
     "baso",
     "basophil",
     "basophils",
@@ -246,9 +262,11 @@
     "bc ưa bazơ",
     "tỷ lệ bc ái kiềm (baso)"
   ],
-  "BASO_ABS": [
+  "BASO#": [
     "baso#",
     "baso #",
+    "basoh",
+    "baso h",
     "absolute basophil",
     "absolute basophil count",
     "basophil count",
@@ -258,7 +276,7 @@
     "sl bc ưa bazơ",
     "số lượng bc ái kiềm"
   ],
-  "NRBC_PERCENT": [
+  "NRBC%": [
     "nrbc%",
     "nrbc %",
     "ty le nrbc",
@@ -266,13 +284,259 @@
     "nucleated red blood cells percent",
     "tỷ lệ nrbc"
   ],
-  "NRBC_ABS": [
+  "NRBC#": [
     "nrbc#",
     "nrbc #",
+    "nrbch",
+    "nrbc h",
     "so luong nrbc",
     "nucleated red blood cell count",
     "nucleated red blood cells count",
     "absolute nrbc",
     "số lượng nrbc"
+  ],
+  "UREA": [
+    "urê",
+    "ure",
+    "urê máu",
+    "định lượng urê máu [máu]",
+    "dinh luong ure mau",
+    "dinh luong ure"
+  ],
+  "GLUCOSE": [
+    "glucose",
+    "đường huyết",
+    "định lượng glucose [máu]",
+    "dinh luong glucose mau",
+    "dinh luong glucose"
+  ],
+  "CREATININE": [
+    "creatinin",
+    "creatinine",
+    "định lượng creatinin (máu)",
+    "dinh luong creatinin mau",
+    "dinh luong creatinin"
+  ],
+  "NA": [
+    "natri",
+    "na+",
+    "natri (bg)"
+  ],
+  "K": [
+    "kali",
+    "k+",
+    "kali (bg)"
+  ],
+  "CL": [
+    "clo",
+    "cl-",
+    "clo (bg)"
+  ],
+  "AST": [
+    "ast",
+    "got",
+    "sgot",
+    "đo hoạt độ ast (got) [máu]",
+    "do hoat do ast (got) [mau]"
+  ],
+  "ALT": [
+    "alt",
+    "gpt",
+    "sgpt",
+    "đo hoạt độ alt (gpt) [máu]",
+    "do hoat do alt (gpt) [mau]"
+  ],
+  "CK_MB": [
+    "ck-mb",
+    "ck mb",
+    "đo hoạt độ ck-mb (isozym mb of creatine kinase) [máu]"
+  ],
+  "HBA1C": [
+    "hba1c",
+    "hba1c (máu)",
+    "định lượng hba1c [máu]"
+  ],
+  "PRO_BNP": [
+    "pro-bnp (n-terminal pro b-type natriuretic peptide)",
+    "pro-bnp (n-terminal pro b-type",
+    "pro bnp",
+    "dinh luong probnp (nt-probnp)"
+  ],
+  "TROPONIN_T": [
+    "troponin t",
+    "hs-troponin t",
+    "hs troponin-t",
+    "hs troponin - t",
+    "hs troponin t",
+    "định lượng troponin t [máu]",
+    "dinh luong troponin t"
+  ],
+  "CHOLESTEROL": [
+    "cholesterol",
+    "cholesterol toàn phần",
+    "định lượng cholesterol toàn phần (máu)",
+    "dinh luong cholesterol toan phan"
+  ],
+  "TRIGLYCERIDE": [
+    "triglycerid",
+    "triglyceride",
+    "tg",
+    "định lượng triglycerid (máu) [máu]",
+    "dinh luong triglycerid (mau)"
+  ],
+  "HDL_C": [
+    "hdl-c",
+    "hdl c",
+    "hdl",
+    "định lượng hdl-c (high density lipoprotein cholesterol) [máu]",
+    "hdl cholesterol",
+    "hdl-cholesterol",
+    "dinh luong hdl-c",
+    "dinh luong hdl-c (high density"
+  ],
+  "LDL_C": [
+    "ldl-c",
+    "ldl c",
+    "ldl - c",
+    "ldl",
+    "định lượng ldl - c (low density lipoprotein cholesterol) [máu]",
+    "dinh luong ldl-c",
+    "dinh luong ldl-c (low density"
+  ],
+  "URIC_ACID": [
+    "acid uric",
+    "axit uric",
+    "định lượng acid uric [máu]",
+    "dinh luong acid uric"
+  ],
+  "FERRITIN": [
+    "ferritin",
+    "định lượng ferritin [máu]",
+    "dinh luong ferritin"
+  ],
+  "ALBUMIN": [
+    "albumin",
+    "alb",
+    "định lượng albumin [máu]",
+    "dinh luong albumin"
+  ],
+  "CALCIUM_ION": [
+    "calci ion",
+    "calci ion hoá",
+    "ca++",
+    "định lượng calci ion hoá [máu]",
+    "dinh luong calci ion hoa",
+    "calci ion (bg)"
+  ],
+  "PTH": [
+    "pth",
+    "parathyroid hormone",
+    "định lượng pth (parathyroid hormone) [máu]"
+  ],
+  "FT4": [
+    "ft4",
+    "free thyroxine",
+    "định lượng ft4 (free thyroxine) [máu]"
+  ],
+  "CORTISOL": [
+    "cortisol",
+    "định lượng cortisol (máu)"
+  ],
+  "TSH": [
+    "tsh",
+    "thyroid stimulating hormone",
+    "định lượng tsh (thyroid stimulating hormone) [máu]"
+  ],
+  "ACTH": [
+    "acth",
+    "adrenocorticotropic hormone",
+    "định lượng acth (adrenocorticotropic hormone) [máu]"
+  ],
+  "PH_BG": [
+    "ph",
+    "ph (bg)"
+  ],
+  "PCO2": [
+    "pco2",
+    "pco2 (bg)"
+  ],
+  "PO2": [
+    "po2",
+    "po2 (bg)"
+  ],
+  "SO2": [
+    "so2",
+    "so2 (bg)"
+  ],
+  "HCO3": [
+    "hco3",
+    "hco3-",
+    "chco3-"
+  ],
+  "THB": [
+    "thb",
+    "total hemoglobin (thb)"
+  ],
+  "COHB": [
+    "cohb",
+    "carboxyhemoglobin (chb)",
+    "carboxyhemoglobin (cohb)"
+  ],
+  "O2HB": [
+    "o2hb",
+    "oxyhemoglobin (o2hb)"
+  ],
+  "HHB": [
+    "hhb",
+    "de-oxyhemoglobin (h)",
+    "de-oxyhemoglobin (hhb)"
+  ],
+  "BARO": [
+    "baro",
+    "baro (bg)"
+  ],
+  "NON_HDL_C": [
+    "non-hdl-c",
+    "non hdl-c"
+  ],
+  "CRP": [
+    "crp",
+    "định lượng crp",
+    "dinh luong crp"
+  ],
+  "LACTATE": [
+    "lactate",
+    "định lượng lactate",
+    "dinh luong lactate"
+  ],
+  "BILIRUBIN_TP": [
+    "bilirubin total partiel ",
+    "bilirubin total ",
+    "bilirubin tp",
+    "bilirubin t.p",
+    "bilirubin toàn phần"
+  ],
+  "BILIRUBIN_TT": [
+    "bilirubin d",
+    "bilirubin direct",
+    "bilirubin tt",
+    "bilirubin trực tiếp",
+    "bilirubin truc tiep"
+  ],
+  "AFP": [
+    "afp",
+    "a4p",
+    "định lượng afp",
+    "dinh luong afp"
+  ],
+  "GGT": [
+    "ggt",
+    "định lượng ggt",
+    "dinh luong ggt"
+  ],
+  "DIOXIN": [
+    "dioxin",
+    "định lượng dioxin",
+    "dinh luong dioxin"
   ]
 }
