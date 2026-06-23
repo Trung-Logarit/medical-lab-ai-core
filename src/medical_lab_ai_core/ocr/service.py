@@ -69,23 +69,69 @@ COLUMN_KEYWORDS = {
 
 logger = logging.getLogger(__name__)
 
-# --- FIX: Tự động tạo file inference.yml bắt buộc cho backend PaddleX (PP-OCRv5) ---
-def ensure_paddlex_yml(model_dir):
-    dir_path = Path(model_dir)
-    if dir_path.exists() and dir_path.is_dir():
-        yml_path = dir_path / "inference.yml"
-        if not yml_path.exists():
-            logger.warning(f"[*] CẢNH BÁO: Không tìm thấy 'inference.yml' trong {model_dir}. Đang tự tạo file cấu hình giả lập để PaddleX khởi động...")
-            with open(yml_path, "w", encoding="utf-8") as f:
-                f.write("Global:\n  model_name: PP-OCRv5_mobile_rec\n")
-
-if CUSTOM_REC_MODEL_DIR:
-    ensure_paddlex_yml(CUSTOM_REC_MODEL_DIR)
-# ----------------------------------------------------------------------------------
-
 ocr_engine = None
 ocr_cpu = None
 _ocr_init_lock = threading.Lock()
+_custom_rec_failed = False
+
+
+def _custom_model_is_complete():
+    model_dir = Path(CUSTOM_REC_MODEL_DIR)
+    required = ("inference.yml", "inference.json", "inference.pdiparams")
+    return model_dir.is_dir() and all(
+        (model_dir / name).is_file() and (model_dir / name).stat().st_size > 0
+        for name in required
+    )
+
+
+def _create_ocr_engine(device):
+    """Create OCR with a custom recognizer when compatible, else use official model."""
+    global _custom_rec_failed
+
+    profile = os.getenv("OCR_MODEL_PROFILE", "mobile").strip().lower()
+    detection_model = (
+        "PP-OCRv5_server_det" if profile == "server" else "PP-OCRv5_mobile_det"
+    )
+    common_options = {
+        "device": device,
+        "text_detection_model_name": detection_model,
+        "use_doc_orientation_classify": False,
+        "use_doc_unwarping": True,
+        "use_textline_orientation": False,
+        # Paddle 3.3.x currently fails while executing this PIR model through
+        # oneDNN (ConvertPirAttribute2RuntimeAttribute). The plain Paddle
+        # backend is stable and still uses the selected CPU/GPU device.
+        "enable_mkldnn": False,
+    }
+
+    # The committed custom model currently fails inside PaddleX 3.5.x even
+    # though its raw Paddle files are readable. Keep it opt-in until it is
+    # re-exported with a compatible runtime; resize/mobile-det optimizations
+    # remain enabled independently.
+    use_custom = os.getenv("OCR_USE_CUSTOM_REC", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    if use_custom and not _custom_rec_failed and _custom_model_is_complete():
+        try:
+            logger.info("Initializing custom Vietnamese OCR recognizer on %s.", device)
+            return PaddleOCR(
+                **common_options,
+                text_recognition_model_name="PP-OCRv5_mobile_rec",
+                text_recognition_model_dir=CUSTOM_REC_MODEL_DIR,
+            )
+        except Exception as exc:
+            _custom_rec_failed = True
+            logger.warning(
+                "Custom Vietnamese OCR model is incompatible with this PaddleX runtime; "
+                "falling back to the official Latin recognizer: %s",
+                exc,
+            )
+
+    logger.info("Initializing official Latin PP-OCRv5 recognizer on %s.", device)
+    return PaddleOCR(
+        **common_options,
+        text_recognition_model_name="latin_PP-OCRv5_mobile_rec",
+    )
 
 def get_ocr_engine():
     global ocr_engine
@@ -99,17 +145,11 @@ def get_ocr_engine():
         if ocr_engine is not None:
             return ocr_engine
 
-        print("Khởi tạo Unified PaddleOCR (Unwarp + Detection + Recognition)...")
-        ocr_engine = PaddleOCR(
-            device="gpu" if paddle.device.is_compiled_with_cuda() else "cpu",
-            lang="vi",
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=True,
-            use_textline_orientation=False,
-            ocr_version="PP-OCRv5",
-            text_recognition_model_name="PP-OCRv5_mobile_rec",
-            text_recognition_model_dir=CUSTOM_REC_MODEL_DIR
-        )
+        requested_device = os.getenv("OCR_DEVICE", "auto").strip().lower()
+        if requested_device == "auto":
+            requested_device = "gpu" if paddle.device.is_compiled_with_cuda() else "cpu"
+        logger.info("Initializing unified PaddleOCR on %s.", requested_device)
+        ocr_engine = _create_ocr_engine(requested_device)
     return ocr_engine
 
 # =========================================================
@@ -380,7 +420,12 @@ def predict_unified(image_or_path):
     Chạy PaddleOCR một lần duy nhất, lấy ra cả ảnh đã unwarp và kết quả tokens.
     """
     global ocr_cpu
-    used_gpu = True
+    requested_device = os.getenv("OCR_DEVICE", "auto").strip().lower()
+    used_gpu = (
+        paddle.device.is_compiled_with_cuda()
+        if requested_device == "auto"
+        else requested_device.startswith("gpu")
+    )
     input_data = str(image_or_path) if isinstance(image_or_path, (str, Path)) else image_or_path
     
     try:
@@ -392,16 +437,7 @@ def predict_unified(image_or_path):
             used_gpu = False
             if ocr_cpu is None:
                 print("   -> Đang khởi tạo mô hình PaddleOCR (CPU) lần đầu tiên...")
-                ocr_cpu = PaddleOCR(
-                    device="cpu",
-                    lang="vi",
-                    use_doc_orientation_classify=False,
-                    use_doc_unwarping=True,
-                    use_textline_orientation=False,
-                    ocr_version="PP-OCRv5",
-                    text_recognition_model_name="PP-OCRv5_mobile_rec",
-                    text_recognition_model_dir=CUSTOM_REC_MODEL_DIR
-                )
+                ocr_cpu = _create_ocr_engine("cpu")
             results = ocr_cpu.predict(input_data)
         else:
             raise

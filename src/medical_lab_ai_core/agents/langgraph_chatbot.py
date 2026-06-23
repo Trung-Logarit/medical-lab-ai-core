@@ -92,10 +92,47 @@ def is_greeting(text: str) -> bool:
     return text.strip().lower() in greetings
 
 
+def is_contextual_report_followup(text: str) -> bool:
+    """Recognize questions that depend on the currently active report.
+
+    These phrases are intentionally resolved before semantic routing so a
+    short follow-up such as "Những triệu chứng nào..." does not lose the
+    report and retrieve unrelated general medical evidence.
+    """
+    text_l = text.strip().lower()
+    contextual_phrases = (
+        "kết quả này",
+        "phiếu này",
+        "chỉ số này",
+        "với kết quả",
+        "trong phiếu",
+        "tôi nên kiểm tra",
+        "tôi cần đi khám",
+        "triệu chứng nào",
+        "khi nào cần đi khám",
+        "có khẳng định tôi",
+    )
+    return any(phrase in text_l for phrase in contextual_phrases)
+
+
+def is_urgent_red_flag_question(text: str) -> bool:
+    text_l = text.strip().lower()
+    return (
+        "triệu chứng nào" in text_l
+        or "khi nào cần đi khám" in text_l
+        or "khi nào nên đi khám" in text_l
+        or "dấu hiệu cảnh báo" in text_l
+    )
+
+
 def safe_route_intent(user_text: str, has_report: bool = False) -> str:
     # Common greetings do not need an embedding model or external network call.
     if is_greeting(user_text):
         return "general_chat"
+
+    # Preserve conversational continuity for an uploaded/selected report.
+    if has_report and is_contextual_report_followup(user_text):
+        return "report_followup"
 
     # Lớp 1: Semantic routing
     try:
@@ -470,6 +507,16 @@ def report_followup_node(state: ChatState) -> ChatState:
     if verified_context:
         evidence = (verified_context.get("evidence") or [])[:6]
         outline = verified_context.get("answer_outline") or {}
+        red_flags = outline.get("urgent_red_flags_vi") or []
+        if is_urgent_red_flag_question(user_text) and red_flags:
+            items = "\n".join(f"- {item}" for item in red_flags)
+            answer = (
+                "Với các bất thường trên phiếu này, bạn nên đi khám sớm nếu có:\n\n"
+                f"{items}\n\n"
+                "Nếu chưa có các dấu hiệu trên, bạn vẫn nên trao đổi với bác sĩ "
+                "và theo dõi lại CBC theo chỉ định."
+            )
+            return {**state, "answer": answer}
         ev_block = format_evidence_block(evidence)
         prompt = f"""Bạn là trợ lý y khoa hỗ trợ giải thích phiếu xét nghiệm máu bằng tiếng Việt.
 
@@ -490,6 +537,8 @@ Yêu cầu:
 - Chỉ nêu nguyên nhân y khoa có trong atomic_claims; tuân thủ conditions_vi và forbidden_claims_vi.
 - Chỉ đề xuất xét nghiệm hoặc hành động có trong recommended_actions_vi hoặc conditions_vi;
   không tự thêm xét nghiệm huyết thanh, CRP, thuốc hay thủ thuật từ kiến thức chung.
+- Nếu người dùng hỏi khi nào cần đi khám hoặc hỏi về triệu chứng cảnh báo,
+  chỉ trả lời từ urgent_red_flags_vi; không chuyển sang bệnh lý hay xét nghiệm khác.
 - Dùng citation_numbers trong atomic_claims. Không gắn citation không hỗ trợ claim.
 - Nếu một claim có nhiều citation_numbers, phải giữ đủ các citation đó; hệ thống sẽ tự đánh lại
   số liên tục trong câu trả lời và danh sách tài liệu.
