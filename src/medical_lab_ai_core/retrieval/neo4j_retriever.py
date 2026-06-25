@@ -17,6 +17,15 @@ try:
 except ImportError:
     NEO4J_AVAILABLE = False
 
+# Tích hợp Langfuse Tracing an toàn
+try:
+    from langfuse.decorators import observe
+except ImportError:
+    def observe(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
 # =========================================================
 # CONFIG
 # =========================================================
@@ -306,6 +315,7 @@ def retrieve_by_indicates(abnormal_items: list[dict], limit_per_test: int = 4) -
 # =========================================================
 # MAIN ENTRY — gọi từ lab_core.retrieve_evidence()
 # =========================================================
+@observe(as_type="retrieval", name="Neo4j Graph Retrieval")
 def neo4j_retrieve(reasoning_context: dict) -> list[dict]:
     """
     GraphRAG retrieval từ Neo4j — 3 path song song:
@@ -360,7 +370,3 @@ def neo4j_retrieve(reasoning_context: dict) -> list[dict]:
         all_evidence.extend(ev_a)
 
     return all_evidence
-
-
-
-

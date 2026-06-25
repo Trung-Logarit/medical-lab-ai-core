@@ -13,6 +13,19 @@ except ImportError:
     StateGraph = None
     END = START = None
 
+# Tích hợp Langfuse Tracing an toàn
+try:
+    from langfuse.decorators import observe, langfuse_context
+except ImportError:
+    def observe(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+    class _NoopLangfuseContext:
+        def update_current_trace(self, **kwargs):
+            return None
+    langfuse_context = _NoopLangfuseContext()
+
 from medical_lab_ai_core.core import lab_core
 from medical_lab_ai_core.graph_rag import service as rag_service
 
@@ -93,12 +106,7 @@ def is_greeting(text: str) -> bool:
 
 
 def is_contextual_report_followup(text: str) -> bool:
-    """Recognize questions that depend on the currently active report.
-
-    These phrases are intentionally resolved before semantic routing so a
-    short follow-up such as "Những triệu chứng nào..." does not lose the
-    report and retrieve unrelated general medical evidence.
-    """
+    """Recognize questions that depend on the currently active report."""
     text_l = text.strip().lower()
     contextual_phrases = (
         "kết quả này",
@@ -126,15 +134,12 @@ def is_urgent_red_flag_question(text: str) -> bool:
 
 
 def safe_route_intent(user_text: str, has_report: bool = False) -> str:
-    # Common greetings do not need an embedding model or external network call.
     if is_greeting(user_text):
         return "general_chat"
 
-    # Preserve conversational continuity for an uploaded/selected report.
     if has_report and is_contextual_report_followup(user_text):
         return "report_followup"
 
-    # Lớp 1: Semantic routing
     try:
         scores = {}
         model = rag_service.get_embedding_model()
@@ -145,14 +150,12 @@ def safe_route_intent(user_text: str, has_report: bool = False) -> str:
         best = max(scores, key=scores.get)
         second = sorted(scores.values(), reverse=True)[1]
         
-        # Nếu 2 intent chênh nhau > 0.1 → tin tưởng semantic routing
         if scores[best] - second > 0.1:
             logger.debug("Semantic routing selected %s with score %.3f.", best, scores[best])
             if best == "report_followup" and not has_report:
                 return "medical_knowledge"
             return best
             
-        # Nếu chênh < 0.1 → dùng LLM router
         logger.debug("Semantic routing scores are close: %.3f vs %.3f.", scores[best], second)
         prompt = f"""Phân loại ý định câu hỏi sau vào đúng 1 trong 3 nhãn:
 - general_chat: hội thoại thông thường, chào hỏi, không liên quan xét nghiệm
@@ -174,7 +177,6 @@ Chỉ trả về đúng 1 nhãn, không giải thích."""
     except Exception as e:
         logger.warning("Intent routing failed; using keyword fallback: %s", e)
 
-    # Lớp 3: Keyword fallback
     text_l = user_text.lower()
     report_words = ["của tôi", "phiếu", "kết quả", "chỉ số này",
                     "bất thường", "cao", "thấp", "giảm", "tăng", "có sao không"]
@@ -201,7 +203,6 @@ def format_evidence_block(evidence: List[Dict[str, Any]]) -> str:
 
 
 def build_clean_answer(raw: str, evidence: List[Dict[str, Any]]) -> str:
-    """Gắn phần References vào cuối phản hồi."""
     try:
         return lab_core.build_user_visible_answer(raw, {}, evidence)
     except Exception:
@@ -241,7 +242,6 @@ def answer_common_lab_notation_question(
     user_text: str,
     report_data: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[str]:
-    """Answer basic CBC notation deterministically instead of using noisy RAG."""
     text_upper = str(user_text or "").upper()
     asks_notation = any(token in str(user_text or "").lower() for token in (
         "là gì", "khác gì", "khác nhau", "viết tắt", "nghĩa là", "#", "%",
@@ -313,6 +313,7 @@ def input_node(state: ChatState) -> ChatState:
 # NODE 2 — routing_node: phân loại ý định
 # =========================================================
 
+@observe(as_type="span", name="Graph Node: Router")
 def routing_node(state: ChatState) -> ChatState:
     """Phân loại ý định người dùng thành 3 nhánh."""
     intent = safe_route_intent(state["user_text"], has_report=state["has_report"])
@@ -334,6 +335,7 @@ def route_to_agent(state: ChatState) -> Literal["general_chat", "report_followup
 # NODE 3A — general_chat_node: hội thoại thông thường
 # =========================================================
 
+@observe(as_type="generation", name="Graph Node: General Chat")
 def general_chat_node(state: ChatState) -> ChatState:
     """Tác nhân hội thoại thông thường — không cần bằng chứng y khoa."""
     user_text = state["user_text"]
@@ -364,7 +366,6 @@ Yêu cầu:
 # =========================================================
 
 def _build_knowledge_ctx(user_text: str) -> Dict[str, Any]:
-    """Xây dựng ngữ cảnh truy xuất từ câu hỏi người dùng."""
     try:
         panels = _infer_panels(user_text)
         tests, topics, conditions = [], [], []
@@ -417,6 +418,7 @@ def _infer_panels(text: str) -> List[str]:
     return ["CBC", "BIOCHEM"]
 
 
+@observe(as_type="generation", name="Graph Node: Medical Knowledge")
 def medical_knowledge_node(state: ChatState) -> ChatState:
     """Tác nhân y khoa — trả lời câu hỏi kiến thức có bằng chứng từ KB."""
     user_text = state["user_text"]
@@ -484,6 +486,7 @@ Yêu cầu:
 # NODE 3C — report_followup_node: hỏi tiếp về phiếu
 # =========================================================
 
+@observe(as_type="generation", name="Graph Node: Report Follow-up")
 def report_followup_node(state: ChatState) -> ChatState:
     """Tác nhân phiếu xét nghiệm — trả lời câu hỏi tiếp theo về phiếu đã phân tích."""
     user_text = state["user_text"]
@@ -493,8 +496,6 @@ def report_followup_node(state: ChatState) -> ChatState:
     if direct_answer:
         return {**state, "answer": direct_answer}
 
-    # Demo CBC: keep follow-up answers on the same verified claims/evidence as
-    # the initial analysis. Neo4j/vector retrieval remains the fallback.
     verified_context = None
     try:
         from medical_lab_ai_core.knowledge_base.verified_answer_context import (
@@ -605,7 +606,6 @@ def output_node(state: ChatState) -> ChatState:
         "content": state["answer"]
     })
 
-    # Chỉ giữ 40 message gần nhất = 20 lượt hỏi đáp
     if len(session["history"]) > 40:
         session["history"] = session["history"][-40:]
 
@@ -617,12 +617,10 @@ def output_node(state: ChatState) -> ChatState:
 # =========================================================
 
 def build_graph() -> Any:
-    """Build and compile the LangGraph state graph."""
     if StateGraph is None:
         raise RuntimeError("langgraph is required to build the chat workflow.")
     g = StateGraph(ChatState)
 
-    # Thêm các node
     g.add_node("input_node",            input_node)
     g.add_node("routing_node",          routing_node)
     g.add_node("general_chat",          general_chat_node)
@@ -630,11 +628,9 @@ def build_graph() -> Any:
     g.add_node("report_followup",       report_followup_node)
     g.add_node("output_node",           output_node)
 
-    # Edge cố định
     g.add_edge(START,           "input_node")
     g.add_edge("input_node",    "routing_node")
 
-    # Edge có điều kiện — routing_node phân nhánh sang 3 agent
     g.add_conditional_edges(
         "routing_node",
         route_to_agent,
@@ -645,7 +641,6 @@ def build_graph() -> Any:
         },
     )
 
-    # Tất cả agent đều về output_node rồi kết thúc
     g.add_edge("general_chat",      "output_node")
     g.add_edge("medical_knowledge", "output_node")
     g.add_edge("report_followup",   "output_node")
@@ -655,7 +650,6 @@ def build_graph() -> Any:
 
 
 _graph = None
-
 
 def get_graph() -> Any:
     global _graph
@@ -673,11 +667,18 @@ logger.debug(
 # ENTRY POINT — gọi từ chatbot_api.py
 # =========================================================
 
+@observe(name="LangGraph Chat Workflow")
 def handle_chat(text: str, session_id: str) -> Dict[str, str]:
     """
     Entry point chính — chạy StateGraph và trả về answer + intent.
     Interface giữ nguyên để chatbot_api.py không cần sửa.
     """
+    # Gắn trace hiện tại theo session của user
+    langfuse_context.update_current_trace(
+        session_id=session_id or "default",
+        tags=["langgraph_chat"]
+    )
+    
     user_text = (text or "").strip()
     if not user_text:
         return {"answer": "Bạn vui lòng nhập câu hỏi nhé.", "intent": "general_chat"}
@@ -705,7 +706,3 @@ def handle_chat(text: str, session_id: str) -> Dict[str, str]:
             "answer": "Xin lỗi, hệ thống gặp lỗi khi xử lý câu hỏi.",
             "intent": "general_chat",
         }
-    
-
-
-
