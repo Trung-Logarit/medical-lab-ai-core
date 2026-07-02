@@ -337,14 +337,16 @@
     "got",
     "sgot",
     "đo hoạt độ ast (got) [máu]",
-    "do hoat do ast (got) [mau]"
+    "do hoat do ast (got) [mau]",
+    "ast (sgot)"
   ],
   "ALT": [
     "alt",
     "gpt",
     "sgpt",
     "đo hoạt độ alt (gpt) [máu]",
-    "do hoat do alt (gpt) [mau]"
+    "do hoat do alt (gpt) [mau]",
+    "alt (sgpt)"
   ],
   "CK_MB": [
     "ck-mb",

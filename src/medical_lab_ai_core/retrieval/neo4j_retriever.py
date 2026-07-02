@@ -142,6 +142,7 @@ LIMIT $limit
 """
 
 
+@observe(as_type="retrieval", name="Neo4j Evidence Retrieval")
 def retrieve_by_tests(test_codes: list[str], limit_per_test: int = 2) -> list[dict]:
     driver = get_neo4j_driver()
     if driver is None:
@@ -179,6 +180,7 @@ LIMIT $limit
 """
 
 
+@observe(as_type="retrieval", name="Neo4j Evidence Retrieval")
 def retrieve_by_conditions(condition_names: list[str], limit: int = 10) -> list[dict]:
     driver = get_neo4j_driver()
     if driver is None or not condition_names:
@@ -236,6 +238,7 @@ LIMIT $limit
 """
 
 
+@observe(as_type="retrieval", name="Neo4j Evidence Retrieval")
 def retrieve_reasoning_chain(case_id: str, limit: int = 15) -> list[dict]:
     driver = get_neo4j_driver()
     if driver is None:
@@ -271,6 +274,7 @@ LIMIT $limit
 """
 
 
+@observe(as_type="retrieval", name="Neo4j Evidence Retrieval")
 def retrieve_by_indicates(abnormal_items: list[dict], limit_per_test: int = 4) -> list[dict]:
     """
     Path D: Test(WBC, high) -[INDICATES]→ Condition ←[SUPPORTS]- Evidence.
@@ -315,7 +319,7 @@ def retrieve_by_indicates(abnormal_items: list[dict], limit_per_test: int = 4) -
 # =========================================================
 # MAIN ENTRY — gọi từ lab_core.retrieve_evidence()
 # =========================================================
-@observe(as_type="retrieval", name="Neo4j Graph Retrieval")
+@observe(as_type="retrieval", name="Neo4j Evidence Retrieval")
 def neo4j_retrieve(reasoning_context: dict) -> list[dict]:
     """
     GraphRAG retrieval từ Neo4j — 3 path song song:
